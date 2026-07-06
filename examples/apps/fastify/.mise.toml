@@ -1,0 +1,8 @@
+[tools]
+node = "22.14.0"
+
+[tasks.install]
+run = "npm install"
+
+[tasks.lazy]
+run = "cargo run --manifest-path ../../../Cargo.toml -- http fastify --cwd . --upstream-port 4104 -- node server.js"

@@ -1,0 +1,25 @@
+body {
+  margin: 0;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #f7f7f2;
+  color: #1d2525;
+}
+
+main {
+  display: grid;
+  min-height: 100vh;
+  place-content: center;
+  text-align: center;
+}
+
+h1 {
+  font-size: 3rem;
+  margin: 0.25rem 0;
+}
+
+.eyebrow {
+  color: #69706d;
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}

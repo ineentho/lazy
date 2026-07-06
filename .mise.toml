@@ -1,0 +1,37 @@
+[tools]
+rust = "1.96.0"
+node = "22.14.0"
+python = "3.12"
+java = "23.0.2"
+maven = "3.9.16"
+uv = "latest"
+tmux = "3.6a"
+
+[env]
+LAZY_EXAMPLE_PROXY = "127.0.0.1:18080"
+LAZY_EXAMPLE_SUFFIX = ".localhost"
+
+[tasks.test]
+description = "Run the root Rust test suite"
+run = "cargo test"
+
+[tasks.example-status]
+description = "Query the example lazy daemon"
+run = "cargo run -- status"
+
+[tasks.example-prepare]
+description = "Install dependencies for every example app"
+run = """
+set -eu
+(cd examples/apps/expo && npm ci)
+(cd examples/apps/vite && npm ci)
+(cd examples/apps/webpack && npm ci)
+(cd examples/apps/fastify && npm ci)
+(cd examples/apps/spring && mvn -q -DskipTests dependency:go-offline)
+(cd examples/apps/axum && cargo fetch)
+"""
+
+[tasks.example-stack]
+description = "Load the tmuxp real-world example stack"
+depends = ["example-prepare"]
+run = "uvx tmuxp load examples/tmuxp.yaml"

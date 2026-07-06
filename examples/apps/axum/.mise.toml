@@ -1,0 +1,8 @@
+[tools]
+rust = "1.96.0"
+
+[tasks.install]
+run = "cargo fetch"
+
+[tasks.lazy]
+run = "cargo run --manifest-path ../../../Cargo.toml -- http axum --cwd . --upstream-port 4106 -- cargo run"

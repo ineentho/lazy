@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "Lazy Expo",
+    "slug": "lazy-expo",
+    "scheme": "lazyexpo",
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

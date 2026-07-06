@@ -23,6 +23,7 @@ pub struct Config {
 #[derive(Clone)]
 struct Registry {
     suffix: String,
+    listen: SocketAddr,
     services: Arc<Mutex<HashMap<String, Service>>>,
 }
 
@@ -49,6 +50,7 @@ pub async fn run(config: Config) -> Result<()> {
 
     let registry = Registry {
         suffix: config.suffix.clone(),
+        listen: config.listen,
         services: Arc::new(Mutex::new(HashMap::new())),
     };
 
@@ -101,7 +103,7 @@ async fn handle_control(stream: UnixStream, registry: Registry) -> Result<()> {
         SocketMessage::RunnerRegister { register } => {
             let (tx, mut rx) = mpsc::channel::<DaemonMessage>(16);
             let url = (register.kind == ProcessKind::Http)
-                .then(|| format!("http://{}{}", register.name, registry.suffix));
+                .then(|| registry.url_for_service(&register.name));
 
             registry.register(register.clone(), tx).await?;
             let mut stream = write_half.reunite(reader.into_inner())?;
@@ -260,7 +262,7 @@ impl Registry {
             }
         };
 
-        match timeout(Duration::from_secs(60), rx).await {
+        match timeout(Duration::from_secs(360), rx).await {
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(err))) => Err(anyhow!(err)),
             Ok(Err(_)) => Err(anyhow!("runner disconnected")),
@@ -310,7 +312,7 @@ impl Registry {
                 ServiceState::Failed => "failed",
             };
             let url = if service.register.kind == ProcessKind::Http {
-                format!("http://{}{}", name, self.suffix)
+                self.url_for_service(name)
             } else {
                 "-".to_string()
             };
@@ -323,5 +325,14 @@ impl Registry {
         }
         rows.push(String::new());
         rows.join("\n")
+    }
+
+    fn url_for_service(&self, name: &str) -> String {
+        let port = self.listen.port();
+        if port == 80 {
+            format!("http://{}{}", name, self.suffix)
+        } else {
+            format!("http://{}{}:{}", name, self.suffix, port)
+        }
     }
 }

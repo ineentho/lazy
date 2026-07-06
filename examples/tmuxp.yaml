@@ -1,0 +1,28 @@
+session_name: lazy-realworld
+windows:
+  - window_name: lazy
+    layout: tiled
+    panes:
+      - shell_command:
+          - cargo run -- proxy --listen 127.0.0.1:18080 --suffix .localhost
+      - shell_command:
+          - sleep 1
+          - cargo run -- http expo --cwd examples/apps/expo --upstream-port 4101 -- npx expo start
+      - shell_command:
+          - sleep 1
+          - cargo run -- http vite --cwd examples/apps/vite --upstream-port 4102 -- npx vite dev
+      - shell_command:
+          - sleep 1
+          - cargo run -- http webpack --cwd examples/apps/webpack --upstream-port 4103 -- npx webpack serve --config webpack.config.js
+      - shell_command:
+          - sleep 1
+          - cargo run -- http fastify --cwd examples/apps/fastify --upstream-port 4104 -- node server.js
+      - shell_command:
+          - sleep 1
+          - cargo run -- http spring --cwd examples/apps/spring --upstream-port 4105 -- mvn spring-boot:run
+      - shell_command:
+          - sleep 1
+          - cargo run -- http axum --cwd examples/apps/axum --upstream-port 4106 -- cargo run
+      - shell_command:
+          - sleep 2
+          - while true; do clear; cargo run -- status; sleep 2; done

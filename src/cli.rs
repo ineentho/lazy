@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
 
 use crate::{daemon, ipc, runner};
 
@@ -39,6 +40,9 @@ struct HttpArgs {
 
     #[arg(long)]
     framework: Option<String>,
+
+    #[arg(long)]
+    cwd: Option<PathBuf>,
 
     #[arg(long, default_value = "4000")]
     port_range_start: u16,
@@ -81,6 +85,7 @@ pub async fn run() -> Result<()> {
                 command: args.command,
                 upstream_port: args.upstream_port,
                 framework: args.framework,
+                cwd: args.cwd,
                 port_range_start: args.port_range_start,
                 port_range_end: args.port_range_end,
             })

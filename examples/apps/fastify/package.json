@@ -1,0 +1,12 @@
+{
+  "name": "lazy-example-fastify",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "fastify": "^4.26.0"
+  }
+}

@@ -2,6 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::{
     io::{Read, Write},
+    path::PathBuf,
     sync::{Arc, Mutex},
     thread,
 };
@@ -18,6 +19,7 @@ pub struct HttpConfig {
     pub command: Vec<String>,
     pub upstream_port: Option<u16>,
     pub framework: Option<String>,
+    pub cwd: Option<PathBuf>,
     pub port_range_start: u16,
     pub port_range_end: u16,
 }
@@ -35,6 +37,12 @@ struct RunningProcess {
 type ProcessSlot = Arc<Mutex<Option<RunningProcess>>>;
 
 pub async fn run_http(config: HttpConfig) -> Result<()> {
+    let cwd = config
+        .cwd
+        .as_ref()
+        .map(std::fs::canonicalize)
+        .transpose()
+        .context("could not resolve --cwd")?;
     let port = match config.upstream_port {
         Some(port) => port,
         None => ports::find_free_port(config.port_range_start, config.port_range_end).await?,
@@ -57,7 +65,7 @@ pub async fn run_http(config: HttpConfig) -> Result<()> {
         &public_url,
         config.framework.as_deref(),
     );
-    run_control_loop(config.name, prepared.argv, prepared.env, Some(port)).await
+    run_control_loop(config.name, prepared.argv, prepared.env, cwd, Some(port)).await
 }
 
 pub async fn run_worker(config: WorkerConfig) -> Result<()> {
@@ -71,7 +79,7 @@ pub async fn run_worker(config: WorkerConfig) -> Result<()> {
 
     println!("lazy: {} worker registered", config.name);
     println!("lazy: waiting for activation");
-    run_control_loop(config.name, config.command, Vec::new(), None).await
+    run_control_loop(config.name, config.command, Vec::new(), None, None).await
 }
 
 async fn register_loop(register: Register) -> Result<Option<String>> {
@@ -106,6 +114,7 @@ async fn run_control_loop(
     name: String,
     argv: Vec<String>,
     env: Vec<(String, String)>,
+    cwd: Option<PathBuf>,
     readiness_port: Option<u16>,
 ) -> Result<()> {
     let stream = CONTROL_STREAM
@@ -126,10 +135,10 @@ async fn run_control_loop(
                 }
 
                 println!("lazy: starting {}", name);
-                match spawn_pty(argv.clone(), env.clone(), process.clone()) {
+                match spawn_pty(argv.clone(), env.clone(), cwd.clone(), process.clone()) {
                     Ok(()) => {
                         if let Some(port) = readiness_port {
-                            match ports::wait_for_port(port, Duration::from_secs(30)).await {
+                            match ports::wait_for_port(port, Duration::from_secs(300)).await {
                                 Ok(()) => {
                                     ipc::send_json(
                                         &mut write,
@@ -183,7 +192,12 @@ async fn run_control_loop(
     Ok(())
 }
 
-fn spawn_pty(argv: Vec<String>, env: Vec<(String, String)>, slot: ProcessSlot) -> Result<()> {
+fn spawn_pty(
+    argv: Vec<String>,
+    env: Vec<(String, String)>,
+    cwd: Option<PathBuf>,
+    slot: ProcessSlot,
+) -> Result<()> {
     if argv.is_empty() {
         return Err(anyhow!("empty command"));
     }
@@ -202,6 +216,9 @@ fn spawn_pty(argv: Vec<String>, env: Vec<(String, String)>, slot: ProcessSlot) -
     }
     for (key, value) in env {
         command.env(key, value);
+    }
+    if let Some(cwd) = cwd {
+        command.cwd(cwd);
     }
 
     let child = pair.slave.spawn_command(command)?;
