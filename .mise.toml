@@ -8,8 +8,8 @@ uv = "latest"
 tmux = "3.6a"
 
 [env]
-LAZY_EXAMPLE_PROXY = "127.0.0.1:18080"
-LAZY_EXAMPLE_SUFFIX = ".localhost"
+LAZY_EXAMPLE_PROXY = "0.0.0.0:18443"
+LAZY_EXAMPLE_CERT_DIR = ".lazy-example"
 
 [tasks.test]
 description = "Run the root Rust test suite"
@@ -23,6 +23,13 @@ run = "cargo run -- status"
 description = "Install dependencies for every example app"
 run = """
 set -eu
+mkdir -p "$LAZY_EXAMPLE_CERT_DIR"
+domain="$(tailscale status --json | node -e 'let s = ""; process.stdin.on("data", d => s += d); process.stdin.on("end", () => { const j = JSON.parse(s); const domain = (j.CertDomains && j.CertDomains[0]) || (j.Self && j.Self.DNSName && j.Self.DNSName.replace(/\\.$/, "")); if (!domain) process.exit(1); console.log(domain); })')"
+printf '%s\\n' "$domain" > "$LAZY_EXAMPLE_CERT_DIR/tailscale-domain"
+tailscale cert \
+  --cert-file "$LAZY_EXAMPLE_CERT_DIR/tailscale.crt" \
+  --key-file "$LAZY_EXAMPLE_CERT_DIR/tailscale.key" \
+  "$domain"
 (cd examples/apps/expo && npm ci)
 (cd examples/apps/vite && npm ci)
 (cd examples/apps/webpack && npm ci)

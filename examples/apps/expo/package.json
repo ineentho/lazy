@@ -6,9 +6,11 @@
     "start": "expo start"
   },
   "dependencies": {
+    "@expo/metro-runtime": "^5.0.0",
     "expo": "^53.0.0",
-    "react": "^19.0.0",
-    "react-native": "^0.79.0"
-  },
-  "devDependencies": {}
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "react-native": "0.79.6",
+    "react-native-web": "^0.20.0"
+  }
 }

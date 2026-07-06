@@ -29,6 +29,15 @@ struct ProxyArgs {
 
     #[arg(long, default_value = "127.0.0.1:8080")]
     listen: String,
+
+    #[arg(long)]
+    route_host: Option<String>,
+
+    #[arg(long, requires = "key")]
+    cert: Option<PathBuf>,
+
+    #[arg(long, requires = "cert")]
+    key: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -76,6 +85,11 @@ pub async fn run() -> Result<()> {
             daemon::run(daemon::Config {
                 suffix: args.suffix,
                 listen: args.listen.parse()?,
+                route_host: args.route_host,
+                tls: match (args.cert, args.key) {
+                    (Some(cert), Some(key)) => Some(daemon::TlsConfig { cert, key }),
+                    _ => None,
+                },
             })
             .await
         }

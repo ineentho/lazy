@@ -14,16 +14,21 @@ mise install
 mise run example-stack
 ```
 
-The proxy listens on `127.0.0.1:18080` and uses `.localhost` names:
+The proxy listens on `0.0.0.0:18443` with a Tailscale certificate and serves
+apps under path prefixes on your node's Tailscale DNS name:
 
 ```text
-http://expo.localhost:18080
-http://vite.localhost:18080
-http://webpack.localhost:18080
-http://fastify.localhost:18080
-http://spring.localhost:18080
-http://axum.localhost:18080
+https://<your-tailscale-node>.ts.net:18443/expo/
+https://<your-tailscale-node>.ts.net:18443/vite/
+https://<your-tailscale-node>.ts.net:18443/webpack/
+https://<your-tailscale-node>.ts.net:18443/fastify/
+https://<your-tailscale-node>.ts.net:18443/spring/
+https://<your-tailscale-node>.ts.net:18443/axum/
 ```
+
+`example-prepare` uses `tailscale cert` to write a certificate and key into
+`.lazy-example/`, then `example-stack` starts the proxy with that cert. The
+actual hostname is written to `.lazy-example/tailscale-domain`.
 
 To prepare dependencies without opening tmux:
 

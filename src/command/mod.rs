@@ -24,11 +24,7 @@ pub fn prepare_http_command(
         ("LAZY_URL".to_string(), public_url.to_string()),
         (
             "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS".to_string(),
-            public_url
-                .split_once("://")
-                .map(|(_, rest)| rest.split('/').next().unwrap_or(rest))
-                .unwrap_or(public_url)
-                .to_string(),
+            public_hostname(public_url).to_string(),
         ),
     ];
     if let Some(host) = host {
@@ -54,4 +50,33 @@ fn basename(value: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or(value)
         .to_string()
+}
+
+fn public_hostname(public_url: &str) -> &str {
+    let without_scheme = public_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(public_url);
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    authority.split(':').next().unwrap_or(authority)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vite_allowed_host_uses_hostname_without_port_or_path() {
+        let prepared = prepare_http_command(
+            vec!["npx".to_string(), "vite".to_string(), "dev".to_string()],
+            4102,
+            "https://node.tailnet.ts.net:18443/vite/",
+            None,
+        );
+
+        assert!(prepared.env.contains(&(
+            "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS".to_string(),
+            "node.tailnet.ts.net".to_string()
+        )));
+    }
 }
