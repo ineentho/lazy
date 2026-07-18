@@ -4,7 +4,7 @@ windows:
     layout: tiled
     panes:
       - shell_command:
-          - cargo run -- proxy --listen 0.0.0.0:18443 --xip-domain "$(cat .lazy-example/xip-domain)" --xip-ip "$(cat .lazy-example/xip-ip)" --cert "$(cat .lazy-example/cert-path)" --key "$(cat .lazy-example/key-path)"
+          - cargo run -- proxy --listen "$LAZY_EXAMPLE_PROXY" --xip-domain "$LAZY_EXAMPLE_XIP_DOMAIN" --xip-ip "$LAZY_EXAMPLE_XIP_IP" --cert "$LAZY_EXAMPLE_CERT" --key "$LAZY_EXAMPLE_KEY"
       - shell_command:
           - cargo run -- http expo --daemon-timeout 10 --cwd examples/apps/expo -- pnpm exec expo start
       - shell_command:
