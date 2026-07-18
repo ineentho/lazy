@@ -114,21 +114,16 @@ jobs:
       - name: Smoke test binary
         run: scripts/smoke-release.sh "target/${{ matrix.target }}/release/lazy" "${{ needs.quality.outputs.version }}"
 
-      - name: Package binary
-        shell: bash
+      - name: Stage binary
         run: |
-          archive="lazy-v${{ needs.quality.outputs.version }}-${{ matrix.target }}.tar.gz"
-          staging="lazy-v${{ needs.quality.outputs.version }}-${{ matrix.target }}"
-          mkdir -p "dist/$staging"
-          cp "target/${{ matrix.target }}/release/lazy" README.md "dist/$staging/"
-          tar -C dist -czf "dist/$archive" "$staging"
-          rm -rf "dist/$staging"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/lazy" "dist/lazy-${{ matrix.target }}"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7
         with:
           name: lazy-${{ matrix.target }}
-          path: dist/*.tar.gz
+          path: dist/lazy-${{ matrix.target }}
           if-no-files-found: error
 
   publish:
@@ -147,7 +142,7 @@ jobs:
           merge-multiple: true
 
       - name: Create checksums
-        run: (cd dist && sha256sum ./*.tar.gz > SHA256SUMS)
+        run: (cd dist && sha256sum ./lazy-* > SHA256SUMS)
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3

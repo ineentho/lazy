@@ -39,17 +39,44 @@ behavior.
 
 Prebuilt binaries for Apple Silicon and Intel Macs, plus static ARM64 and
 x86-64 Linux binaries, are attached to each
-[GitHub release](https://github.com/ineentho/lazy/releases). Download the
-archive for your platform, extract it, and place `lazy` somewhere on your
-`PATH`:
+[GitHub release](https://github.com/ineentho/lazy/releases).
+
+### Linux
 
 ```sh
-tar -xzf lazy-v0.1.0-aarch64-apple-darwin.tar.gz
-install lazy-v0.1.0-aarch64-apple-darwin/lazy ~/.local/bin/lazy
+case "$(uname -m)" in
+  x86_64) asset=lazy-x86_64-unknown-linux-musl ;;
+  aarch64|arm64) asset=lazy-aarch64-unknown-linux-musl ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+mkdir -p "$HOME/.local/bin"
+curl -fL "https://github.com/ineentho/lazy/releases/latest/download/$asset" \
+  -o "$HOME/.local/bin/lazy"
+chmod +x "$HOME/.local/bin/lazy"
 lazy --version
 ```
 
-Use `SHA256SUMS` from the release to verify an archive before installing it.
+The Linux binaries are statically linked with musl and work on common
+distributions including Ubuntu, Debian, Fedora, Arch, and Alpine.
+
+### macOS
+
+```sh
+case "$(uname -m)" in
+  arm64) asset=lazy-aarch64-apple-darwin ;;
+  x86_64) asset=lazy-x86_64-apple-darwin ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+mkdir -p "$HOME/.local/bin"
+curl -fL "https://github.com/ineentho/lazy/releases/latest/download/$asset" \
+  -o "$HOME/.local/bin/lazy"
+chmod +x "$HOME/.local/bin/lazy"
+lazy --version
+```
+
+Ensure `$HOME/.local/bin` is on your `PATH`. These unauthenticated download
+commands will work once the repository is public. Use `SHA256SUMS` from the
+release to verify a binary before installing it.
 
 ## Xip-style DNS and TLS
 
