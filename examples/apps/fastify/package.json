@@ -2,6 +2,7 @@
   "name": "lazy-example-fastify",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "pnpm@12.0.0-alpha.15",
   "type": "module",
   "scripts": {
     "dev": "node server.js"

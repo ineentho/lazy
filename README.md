@@ -16,7 +16,7 @@ cargo run -- proxy
 Register a development server in another terminal:
 
 ```sh
-cargo run -- http vite -- npx vite dev
+cargo run -- http vite -- pnpm dlx vite dev
 ```
 
 The service is available at `http://vite.localhost:8080`. Visiting it activates
@@ -28,7 +28,7 @@ When a process manager starts runners alongside the proxy, let each runner
 wait briefly for the daemon instead of adding shell polling:
 
 ```sh
-cargo run -- http vite --daemon-timeout 10 -- npx vite dev
+cargo run -- http vite --daemon-timeout 10 -- pnpm dlx vite dev
 cargo run -- worker jobs --daemon-timeout 10 -- ./run-jobs
 ```
 

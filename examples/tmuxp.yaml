@@ -6,13 +6,13 @@ windows:
       - shell_command:
           - cargo run -- proxy --listen 0.0.0.0:18443 --xip-domain "$(cat .lazy-example/xip-domain)" --xip-ip "$(cat .lazy-example/xip-ip)" --cert "$(cat .lazy-example/cert-path)" --key "$(cat .lazy-example/key-path)"
       - shell_command:
-          - cargo run -- http expo --daemon-timeout 10 --cwd examples/apps/expo -- npx expo start
+          - cargo run -- http expo --daemon-timeout 10 --cwd examples/apps/expo -- pnpm exec expo start
       - shell_command:
-          - cargo run -- http vite --daemon-timeout 10 --cwd examples/apps/vite -- npx vite dev
+          - cargo run -- http vite --daemon-timeout 10 --cwd examples/apps/vite -- pnpm exec vite dev
       - shell_command:
-          - cargo run -- http webpack --daemon-timeout 10 --cwd examples/apps/webpack -- npx webpack serve --config webpack.config.js
+          - cargo run -- http webpack --daemon-timeout 10 --cwd examples/apps/webpack -- pnpm exec webpack serve --config webpack.config.js
       - shell_command:
-          - cargo run -- http fastify --daemon-timeout 10 --cwd examples/apps/fastify -- node server.js
+          - cargo run -- http fastify --daemon-timeout 10 --cwd examples/apps/fastify -- pnpm run dev
       - shell_command:
           - cargo run -- http spring --daemon-timeout 10 --cwd examples/apps/spring -- mvn spring-boot:run
       - shell_command:

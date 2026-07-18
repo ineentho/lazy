@@ -44,14 +44,9 @@ Certificate issuance and renewal stay outside `lazy`; the stack only reads the
 paths supplied above. The paths and resolved settings are recorded under the
 ignored `.lazy-example/` directory for tmuxp.
 
-To prepare dependencies without configuring TLS or opening tmux:
-
-```sh
-mise run example-deps
-```
-
 `mise run example-stack` validates the xip settings and certificate paths,
-installs or refreshes dependencies, and then starts tmuxp.
+then starts tmuxp. Each app installs or fetches missing dependencies when it is
+first activated.
 After the first configured run, it reuses the settings recorded in
 `.lazy-example/`, so the environment variables do not need to be exported again.
 
@@ -61,7 +56,8 @@ After the first configured run, it reuses the settings recorded in
   starting without tmux-specific polling loops.
 - Upstream ports are allocated by the daemon when each app is activated and
   released when it stops.
-- Vite and Expo are launched directly through `npx` so `lazy` can inject port
-  flags automatically.
+- Vite and Expo are launched directly through `pnpm exec` so `lazy` can inject
+  port flags automatically.
+- The JavaScript apps rely on pnpm's automatic install-on-run behavior.
 - Webpack, Fastify, Spring, and Axum read `PORT` from the environment.
 - Spring also maps `PORT` to `SERVER_PORT` in `application.properties`.
