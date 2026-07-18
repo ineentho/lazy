@@ -72,8 +72,7 @@ For Intel:
 curl -fL https://github.com/ineentho/lazy/releases/latest/download/lazy-x86_64-apple-darwin > ~/.local/bin/lazy && chmod +x ~/.local/bin/lazy
 ```
 
-The destination directory must already exist and be on your `PATH`. These
-unauthenticated downloads will work once the repository is public. Use
+The destination directory must already exist and be on your `PATH`. Use
 `SHA256SUMS` from the release to verify a binary before installing it.
 
 ## Xip-style DNS and TLS
