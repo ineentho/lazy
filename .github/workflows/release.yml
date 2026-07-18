@@ -1,0 +1,156 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Verify release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Resolve and verify version
+        id: version
+        shell: bash
+        run: |
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ "$version" != "$cargo_version" ]]; then
+              echo "tag version $version does not match Cargo version $cargo_version" >&2
+              exit 1
+            fi
+          else
+            version="$cargo_version"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid semantic version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --all-targets --locked
+
+      - name: Audit dependencies
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  binaries:
+    name: Build ${{ matrix.target }}
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Build binary
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == Linux ]]; then
+            cc_key="CC_${{ matrix.target }}"
+            linker_key="CARGO_TARGET_${{ matrix.target }}_LINKER"
+            export "${cc_key//-/_}=musl-gcc"
+            linker_key="${linker_key^^}"
+            export "${linker_key//-/_}=musl-gcc"
+          fi
+          cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Verify static Linux binary
+        if: runner.os == 'Linux'
+        run: '! readelf --program-headers "target/${{ matrix.target }}/release/lazy" | grep -q interpreter'
+
+      - name: Smoke test binary
+        run: scripts/smoke-release.sh "target/${{ matrix.target }}/release/lazy" "${{ needs.quality.outputs.version }}"
+
+      - name: Package binary
+        shell: bash
+        run: |
+          archive="lazy-v${{ needs.quality.outputs.version }}-${{ matrix.target }}.tar.gz"
+          staging="lazy-v${{ needs.quality.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "dist/$staging"
+          cp "target/${{ matrix.target }}/release/lazy" README.md "dist/$staging/"
+          tar -C dist -czf "dist/$archive" "$staging"
+          rm -rf "dist/$staging"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: lazy-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [quality, binaries]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: lazy-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        run: (cd dist && sha256sum ./*.tar.gz > SHA256SUMS)
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true

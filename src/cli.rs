@@ -7,6 +7,7 @@ use crate::{daemon, ipc, runner};
 #[derive(Parser)]
 #[command(name = "lazy")]
 #[command(about = "On-demand dev process activation")]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -207,6 +208,15 @@ mod tests {
             routing,
             daemon::HostRouting::Suffix(".localhost".to_string())
         );
+    }
+
+    #[test]
+    fn reports_package_version() {
+        let Err(error) = Cli::try_parse_from(["lazy", "--version"]) else {
+            panic!("expected version output");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

@@ -35,6 +35,22 @@ cargo run -- worker jobs --daemon-timeout 10 -- ./run-jobs
 Without `--daemon-timeout`, both commands retain their immediate connection
 behavior.
 
+## Installation
+
+Prebuilt binaries for Apple Silicon and Intel Macs, plus static ARM64 and
+x86-64 Linux binaries, are attached to each
+[GitHub release](https://github.com/ineentho/lazy/releases). Download the
+archive for your platform, extract it, and place `lazy` somewhere on your
+`PATH`:
+
+```sh
+tar -xzf lazy-v0.1.0-aarch64-apple-darwin.tar.gz
+install lazy-v0.1.0-aarch64-apple-darwin/lazy ~/.local/bin/lazy
+lazy --version
+```
+
+Use `SHA256SUMS` from the release to verify an archive before installing it.
+
 ## Xip-style DNS and TLS
 
 An authoritative xip-style DNS zone can expose the same proxy to other
