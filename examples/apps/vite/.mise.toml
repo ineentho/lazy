@@ -5,4 +5,4 @@ node = "22.14.0"
 run = "npm install"
 
 [tasks.lazy]
-run = "cargo run --manifest-path ../../../Cargo.toml -- http vite --cwd . --upstream-port 4102 -- npx vite dev"
+run = "cargo run --manifest-path ../../../Cargo.toml -- http vite --cwd . -- npx vite dev"

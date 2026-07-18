@@ -6,4 +6,4 @@ maven = "3.9.16"
 run = "mvn dependency:go-offline"
 
 [tasks.lazy]
-run = "cargo run --manifest-path ../../../Cargo.toml -- http spring --cwd . --upstream-port 4105 -- mvn spring-boot:run"
+run = "cargo run --manifest-path ../../../Cargo.toml -- http spring --cwd . -- mvn spring-boot:run"

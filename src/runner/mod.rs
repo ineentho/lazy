@@ -14,7 +14,7 @@ use tokio::{
 
 use crate::{
     command::{self, ports},
-    ipc::{self, DaemonMessage, ProcessKind, Register, RunnerMessage, SocketMessage},
+    ipc::{self, DaemonMessage, PortRequest, ProcessKind, Register, RunnerMessage, SocketMessage},
     state,
 };
 
@@ -49,15 +49,18 @@ pub async fn run_http(config: HttpConfig) -> Result<()> {
         .map(std::fs::canonicalize)
         .transpose()
         .context("could not resolve --cwd")?;
-    let port = match config.upstream_port {
-        Some(port) => port,
-        None => ports::find_free_port(config.port_range_start, config.port_range_end).await?,
+    let port_request = match config.upstream_port {
+        Some(port) => PortRequest::Fixed { port },
+        None => PortRequest::Range {
+            start: config.port_range_start,
+            end: config.port_range_end,
+        },
     };
     let url = register_loop(
         Register {
             name: config.name.clone(),
             kind: ProcessKind::Http,
-            upstream_port: Some(port),
+            port_request: Some(port_request),
             active_while: Vec::new(),
         },
         config.daemon_timeout,
@@ -68,13 +71,16 @@ pub async fn run_http(config: HttpConfig) -> Result<()> {
     println!("lazy: {} registered at {}", config.name, public_url);
     println!("lazy: waiting for traffic");
 
-    let prepared = command::prepare_http_command(
+    run_control_loop(
+        config.name,
         config.command,
-        port,
-        &public_url,
-        config.framework.as_deref(),
-    );
-    run_control_loop(config.name, prepared.argv, prepared.env, cwd, Some(port)).await
+        cwd,
+        Some(HttpCommand {
+            public_url,
+            framework: config.framework,
+        }),
+    )
+    .await
 }
 
 pub async fn run_worker(config: WorkerConfig) -> Result<()> {
@@ -82,7 +88,7 @@ pub async fn run_worker(config: WorkerConfig) -> Result<()> {
         Register {
             name: config.name.clone(),
             kind: ProcessKind::Worker,
-            upstream_port: None,
+            port_request: None,
             active_while: config.active_while,
         },
         config.daemon_timeout,
@@ -91,7 +97,7 @@ pub async fn run_worker(config: WorkerConfig) -> Result<()> {
 
     println!("lazy: {} worker registered", config.name);
     println!("lazy: waiting for activation");
-    run_control_loop(config.name, config.command, Vec::new(), None, None).await
+    run_control_loop(config.name, config.command, None, None).await
 }
 
 async fn register_loop(
@@ -152,9 +158,8 @@ static CONTROL_STREAM: std::sync::OnceLock<Mutex<Option<UnixStream>>> = std::syn
 async fn run_control_loop(
     name: String,
     argv: Vec<String>,
-    env: Vec<(String, String)>,
     cwd: Option<PathBuf>,
-    readiness_port: Option<u16>,
+    http: Option<HttpCommand>,
 ) -> Result<()> {
     let stream = CONTROL_STREAM
         .get()
@@ -166,7 +171,7 @@ async fn run_control_loop(
 
     while let Some(message) = ipc::read_json::<DaemonMessage>(&mut reader).await? {
         match message {
-            DaemonMessage::Start => {
+            DaemonMessage::Start { port } => {
                 if process.lock().unwrap().is_some() {
                     ipc::send_json(&mut write, &RunnerMessage::Ready { name: name.clone() })
                         .await?;
@@ -174,9 +179,23 @@ async fn run_control_loop(
                 }
 
                 println!("lazy: starting {}", name);
-                match spawn_pty(argv.clone(), env.clone(), cwd.clone(), process.clone()) {
+                let prepared = match prepare_start_command(&argv, http.as_ref(), port) {
+                    Ok(prepared) => prepared,
+                    Err(err) => {
+                        ipc::send_json(
+                            &mut write,
+                            &RunnerMessage::Failed {
+                                name: name.clone(),
+                                error: err.to_string(),
+                            },
+                        )
+                        .await?;
+                        continue;
+                    }
+                };
+                match spawn_pty(prepared.argv, prepared.env, cwd.clone(), process.clone()) {
                     Ok(()) => {
-                        if let Some(port) = readiness_port {
+                        if let Some(port) = port {
                             match ports::wait_for_port(port, Duration::from_secs(300)).await {
                                 Ok(()) => {
                                     ipc::send_json(
@@ -229,6 +248,32 @@ async fn run_control_loop(
     }
 
     Ok(())
+}
+
+struct HttpCommand {
+    public_url: String,
+    framework: Option<String>,
+}
+
+fn prepare_start_command(
+    argv: &[String],
+    http: Option<&HttpCommand>,
+    port: Option<u16>,
+) -> Result<command::PreparedCommand> {
+    match (http, port) {
+        (Some(http), Some(port)) => Ok(command::prepare_http_command(
+            argv.to_vec(),
+            port,
+            &http.public_url,
+            http.framework.as_deref(),
+        )),
+        (None, None) => Ok(command::PreparedCommand {
+            argv: argv.to_vec(),
+            env: Vec::new(),
+        }),
+        (Some(_), None) => Err(anyhow!("HTTP service start did not include a port")),
+        (None, Some(_)) => Err(anyhow!("worker start unexpectedly included a port")),
+    }
 }
 
 fn spawn_pty(
@@ -315,6 +360,29 @@ mod tests {
     fn test_socket_path(label: &str) -> PathBuf {
         let id = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("lazy-{label}-{}-{id}.sock", std::process::id()))
+    }
+
+    #[test]
+    fn prepares_http_command_with_port_received_at_start() {
+        let argv = vec!["vite".to_string(), "dev".to_string()];
+        let http = HttpCommand {
+            public_url: "http://vite.localhost:8080".to_string(),
+            framework: None,
+        };
+
+        let prepared = prepare_start_command(&argv, Some(&http), Some(4321)).unwrap();
+
+        assert!(
+            prepared
+                .argv
+                .windows(2)
+                .any(|args| args == ["--port", "4321"])
+        );
+        assert!(
+            prepared
+                .env
+                .contains(&("PORT".to_string(), "4321".to_string()))
+        );
     }
 
     #[tokio::test]

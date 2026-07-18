@@ -23,7 +23,8 @@ use tokio_rustls::{
 
 use crate::{
     ipc::{
-        self, ClientRequest, DaemonMessage, ProcessKind, Register, RunnerMessage, SocketMessage,
+        self, ClientRequest, DaemonMessage, PortRequest, ProcessKind, Register, RunnerMessage,
+        SocketMessage,
     },
     state,
 };
@@ -119,6 +120,7 @@ struct Registry {
 
 struct Service {
     register: Register,
+    active_port: Option<u16>,
     state: ServiceState,
     control: mpsc::Sender<DaemonMessage>,
     waiters: Vec<oneshot::Sender<Result<(), String>>>,
@@ -250,34 +252,49 @@ async fn handle_control(stream: UnixStream, registry: Registry) -> Result<()> {
     match message {
         SocketMessage::RunnerRegister { register } => {
             let (tx, mut rx) = mpsc::channel::<DaemonMessage>(16);
+            let name = register.name.clone();
             let url = if register.kind == ProcessKind::Http {
                 Some(registry.url_for_service(&register.name)?)
             } else {
                 None
             };
 
-            registry.register(register.clone(), tx).await?;
-            let mut stream = write_half.reunite(reader.into_inner())?;
-            ipc::send_json(&mut stream, &DaemonMessage::Registered { url }).await?;
-            let (read_half, mut write_half) = stream.into_split();
-            let mut reader = BufReader::new(read_half);
-
-            let writer = tokio::spawn(async move {
-                while let Some(message) = rx.recv().await {
-                    if ipc::send_json(&mut write_half, &message).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            loop {
-                let Some(message) = ipc::read_json::<RunnerMessage>(&mut reader).await? else {
-                    break;
-                };
-                registry.apply_runner_message(message).await;
+            if let Err(error) = registry.register(register, tx.clone()).await {
+                ipc::send_json(
+                    &mut write_half,
+                    &DaemonMessage::Error {
+                        message: error.to_string(),
+                    },
+                )
+                .await?;
+                return Ok(());
             }
+            let result = async {
+                let mut stream = write_half.reunite(reader.into_inner())?;
+                ipc::send_json(&mut stream, &DaemonMessage::Registered { url }).await?;
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
 
-            writer.abort();
+                tokio::spawn(async move {
+                    while let Some(message) = rx.recv().await {
+                        if ipc::send_json(&mut write_half, &message).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                loop {
+                    let Some(message) = ipc::read_json::<RunnerMessage>(&mut reader).await? else {
+                        break;
+                    };
+                    registry.apply_runner_message(message).await;
+                }
+                Ok::<(), anyhow::Error>(())
+            }
+            .await;
+
+            registry.unregister(&name, &tx).await;
+            result?;
         }
         SocketMessage::Client { request } => {
             let response = handle_client(request, registry).await;
@@ -324,8 +341,8 @@ where
         .await
         .ok_or_else(|| anyhow!("host {host:?} does not match a lazy route"))?;
 
-    let port = registry.upstream_port(&route.name).await?;
     registry.start(&route.name).await?;
+    let port = registry.upstream_port(&route.name).await?;
 
     let mut upstream = TcpStream::connect(("127.0.0.1", port)).await?;
     upstream.write_all(&buffer).await?;
@@ -363,12 +380,35 @@ impl Registry {
         register: Register,
         control: mpsc::Sender<DaemonMessage>,
     ) -> Result<()> {
+        match (register.kind, register.port_request) {
+            (ProcessKind::Http, Some(PortRequest::Fixed { port })) if port > 0 => {}
+            (ProcessKind::Http, Some(PortRequest::Range { start, end }))
+                if start > 0 && start <= end => {}
+            (ProcessKind::Http, Some(PortRequest::Fixed { .. })) => {
+                return Err(anyhow!("upstream port must be greater than zero"));
+            }
+            (ProcessKind::Http, Some(PortRequest::Range { start, end })) => {
+                return Err(anyhow!("invalid port range {start}-{end}"));
+            }
+            (ProcessKind::Http, None) => {
+                return Err(anyhow!("HTTP service registration requires a port request"));
+            }
+            (ProcessKind::Worker, Some(_)) => {
+                return Err(anyhow!("worker registration must not request a port"));
+            }
+            (ProcessKind::Worker, None) => {}
+        }
+
         let mut services = self.services.lock().await;
         let name = register.name.clone();
+        if services.contains_key(&name) {
+            return Err(anyhow!("service {name:?} is already registered"));
+        }
         services.insert(
             name,
             Service {
                 register,
+                active_port: None,
                 state: ServiceState::Dormant,
                 control,
                 waiters: Vec::new(),
@@ -377,19 +417,40 @@ impl Registry {
         Ok(())
     }
 
-    async fn apply_runner_message(&self, message: RunnerMessage) {
-        let (name, state, result) = match message {
-            RunnerMessage::Ready { name } => (name, ServiceState::Ready, Ok(())),
-            RunnerMessage::Stopped { name } => {
-                (name, ServiceState::Dormant, Err("stopped".to_string()))
+    async fn unregister(&self, name: &str, control: &mpsc::Sender<DaemonMessage>) {
+        let mut services = self.services.lock().await;
+        let is_current = services
+            .get(name)
+            .is_some_and(|service| service.control.same_channel(control));
+        if !is_current {
+            return;
+        }
+        if let Some(mut service) = services.remove(name) {
+            for waiter in std::mem::take(&mut service.waiters) {
+                let _ = waiter.send(Err("runner disconnected".to_string()));
             }
-            RunnerMessage::Failed { name, error } => (name, ServiceState::Failed, Err(error)),
+        }
+    }
+
+    async fn apply_runner_message(&self, message: RunnerMessage) {
+        let (name, state, result, release_port) = match message {
+            RunnerMessage::Ready { name } => (name, ServiceState::Ready, Ok(()), false),
+            RunnerMessage::Stopped { name } => (
+                name,
+                ServiceState::Dormant,
+                Err("stopped".to_string()),
+                true,
+            ),
+            RunnerMessage::Failed { name, error } => (name, ServiceState::Failed, Err(error), true),
             RunnerMessage::Register(_) => return,
         };
 
         let mut services = self.services.lock().await;
         if let Some(service) = services.get_mut(&name) {
             service.state = state;
+            if release_port {
+                service.active_port = None;
+            }
             let waiters = std::mem::take(&mut service.waiters);
             for waiter in waiters {
                 let _ = waiter.send(result.clone());
@@ -401,21 +462,31 @@ impl Registry {
         let rx = {
             let mut services = self.services.lock().await;
             let service = services
-                .get_mut(name)
+                .get(name)
                 .ok_or_else(|| anyhow!("service not registered"))?;
 
             match service.state {
                 ServiceState::Ready => return Ok(()),
                 ServiceState::Starting => {
                     let (tx, rx) = oneshot::channel();
+                    let service = services.get_mut(name).unwrap();
                     service.waiters.push(tx);
                     rx
                 }
                 ServiceState::Dormant | ServiceState::Failed => {
+                    let port = match service.register.kind {
+                        ProcessKind::Http => Some(allocate_port(
+                            &services,
+                            service.register.port_request.unwrap(),
+                        )?),
+                        ProcessKind::Worker => None,
+                    };
+                    let service = services.get_mut(name).unwrap();
+                    service.control.try_send(DaemonMessage::Start { port })?;
                     let (tx, rx) = oneshot::channel();
                     service.waiters.push(tx);
                     service.state = ServiceState::Starting;
-                    service.control.try_send(DaemonMessage::Start)?;
+                    service.active_port = port;
                     rx
                 }
             }
@@ -442,8 +513,8 @@ impl Registry {
         let services = self.services.lock().await;
         services
             .get(name)
-            .and_then(|service| service.register.upstream_port)
-            .ok_or_else(|| anyhow!("service {name:?} has no upstream port"))
+            .and_then(|service| service.active_port)
+            .ok_or_else(|| anyhow!("service {name:?} has no active upstream port"))
     }
 
     async fn route_for_request(&self, host: &str, buffer: &mut Vec<u8>) -> Option<ProxyRoute> {
@@ -503,8 +574,7 @@ impl Registry {
                 "-".to_string()
             };
             let upstream = service
-                .register
-                .upstream_port
+                .active_port
                 .map(|p| format!("127.0.0.1:{p}"))
                 .unwrap_or_else(|| "-".to_string());
             rows.push(format!("{name}\t{kind}\t{state}\t{url}\t{upstream}"));
@@ -533,6 +603,23 @@ impl Registry {
         } else {
             Ok(format!("{scheme}://{hostname}:{port}"))
         }
+    }
+}
+
+fn allocate_port(services: &HashMap<String, Service>, request: PortRequest) -> Result<u16> {
+    let available = |port| {
+        !services
+            .values()
+            .any(|service| service.active_port == Some(port))
+            && std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
+    };
+
+    match request {
+        PortRequest::Fixed { port } if available(port) => Ok(port),
+        PortRequest::Fixed { port } => Err(anyhow!("upstream port {port} is unavailable")),
+        PortRequest::Range { start, end } => (start..=end)
+            .find(|port| available(*port))
+            .ok_or_else(|| anyhow!("no free port found in range {start}-{end}")),
     }
 }
 
@@ -654,6 +741,8 @@ fn parse_header<'a>(buffer: &'a [u8], header: &str) -> Option<&'a str> {
 mod tests {
     use super::*;
 
+    static PORT_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
     fn registry(host_routing: HostRouting, port: u16, tls_enabled: bool) -> Registry {
         Registry {
             host_routing,
@@ -662,6 +751,164 @@ mod tests {
             tls_enabled,
             services: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn free_port_range(size: u16) -> (u16, u16) {
+        'range: for start in 20_000u16..60_000u16 {
+            let end = start + size - 1;
+            let mut listeners = Vec::new();
+            for port in start..=end {
+                match std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+                    Ok(listener) => listeners.push(listener),
+                    Err(_) => continue 'range,
+                }
+            }
+            drop(listeners);
+            return (start, end);
+        }
+        panic!("could not find {size} consecutive free ports for test");
+    }
+
+    async fn register_http(
+        registry: &Registry,
+        name: &str,
+        request: PortRequest,
+    ) -> (mpsc::Sender<DaemonMessage>, mpsc::Receiver<DaemonMessage>) {
+        let (control, messages) = mpsc::channel(4);
+        registry
+            .register(
+                Register {
+                    name: name.to_string(),
+                    kind: ProcessKind::Http,
+                    port_request: Some(request),
+                    active_while: Vec::new(),
+                },
+                control.clone(),
+            )
+            .await
+            .unwrap();
+        (control, messages)
+    }
+
+    async fn mark_ready(
+        registry: Registry,
+        name: &'static str,
+        mut messages: mpsc::Receiver<DaemonMessage>,
+    ) -> u16 {
+        let Some(DaemonMessage::Start { port: Some(port) }) = messages.recv().await else {
+            panic!("expected HTTP start message with a port");
+        };
+        registry
+            .apply_runner_message(RunnerMessage::Ready {
+                name: name.to_string(),
+            })
+            .await;
+        port
+    }
+
+    #[tokio::test]
+    async fn allocates_distinct_ports_when_services_are_started() {
+        let _guard = PORT_TEST_LOCK.lock().await;
+        let (start, end) = free_port_range(2);
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (_, one_messages) =
+            register_http(&registry, "one", PortRequest::Range { start, end }).await;
+        let (_, two_messages) =
+            register_http(&registry, "two", PortRequest::Range { start, end }).await;
+
+        assert!(registry.upstream_port("one").await.is_err());
+        let one_ready = tokio::spawn(mark_ready(registry.clone(), "one", one_messages));
+        let two_ready = tokio::spawn(mark_ready(registry.clone(), "two", two_messages));
+        let (one, two) = tokio::join!(registry.start("one"), registry.start("two"));
+        one.unwrap();
+        two.unwrap();
+
+        let one_port = one_ready.await.unwrap();
+        let two_port = two_ready.await.unwrap();
+        assert_ne!(one_port, two_port);
+        assert!((start..=end).contains(&one_port));
+        assert!((start..=end).contains(&two_port));
+    }
+
+    #[tokio::test]
+    async fn releases_automatic_port_after_service_stops() {
+        let _guard = PORT_TEST_LOCK.lock().await;
+        let (port, _) = free_port_range(1);
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (_, one_messages) = register_http(
+            &registry,
+            "one",
+            PortRequest::Range {
+                start: port,
+                end: port,
+            },
+        )
+        .await;
+        let (_, two_messages) = register_http(
+            &registry,
+            "two",
+            PortRequest::Range {
+                start: port,
+                end: port,
+            },
+        )
+        .await;
+
+        let one_ready = tokio::spawn(mark_ready(registry.clone(), "one", one_messages));
+        registry.start("one").await.unwrap();
+        assert_eq!(one_ready.await.unwrap(), port);
+
+        let error = registry.start("two").await.unwrap_err();
+        assert!(error.to_string().contains("no free port found"));
+
+        registry
+            .apply_runner_message(RunnerMessage::Stopped {
+                name: "one".to_string(),
+            })
+            .await;
+        let two_ready = tokio::spawn(mark_ready(registry.clone(), "two", two_messages));
+        registry.start("two").await.unwrap();
+        assert_eq!(two_ready.await.unwrap(), port);
+    }
+
+    #[tokio::test]
+    async fn explicit_port_is_checked_when_service_starts() {
+        let _guard = PORT_TEST_LOCK.lock().await;
+        let (port, _) = free_port_range(1);
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (_, one_messages) = register_http(&registry, "one", PortRequest::Fixed { port }).await;
+        let (_, _two_messages) = register_http(&registry, "two", PortRequest::Fixed { port }).await;
+
+        let one_ready = tokio::spawn(mark_ready(registry.clone(), "one", one_messages));
+        registry.start("one").await.unwrap();
+        assert_eq!(one_ready.await.unwrap(), port);
+
+        let error = registry.start("two").await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("upstream port {port} is unavailable")
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnect_removes_service_and_releases_waiters() {
+        let _guard = PORT_TEST_LOCK.lock().await;
+        let (port, _) = free_port_range(1);
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (control, mut messages) =
+            register_http(&registry, "one", PortRequest::Fixed { port }).await;
+
+        let start_registry = registry.clone();
+        let start = tokio::spawn(async move { start_registry.start("one").await });
+        assert!(matches!(
+            messages.recv().await,
+            Some(DaemonMessage::Start { port: Some(value) }) if value == port
+        ));
+        registry.unregister("one", &control).await;
+
+        let error = start.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("runner disconnected"));
+        assert_eq!(registry.status().await, "no services registered\n");
     }
 
     #[test]

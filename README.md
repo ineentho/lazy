@@ -20,7 +20,8 @@ cargo run -- http vite -- npx vite dev
 ```
 
 The service is available at `http://vite.localhost:8080`. Visiting it activates
-the dormant Vite process. `lazy status`, `lazy start vite`, and
+the dormant Vite process. Its upstream port is allocated at activation time
+and injected into the command. `lazy status`, `lazy start vite`, and
 `lazy stop vite` provide manual control.
 
 When a process manager starts runners alongside the proxy, let each runner

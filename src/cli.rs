@@ -72,6 +72,7 @@ struct HttpArgs {
     )]
     daemon_timeout: Option<u64>,
 
+    /// Fixed upstream port override; otherwise a port is chosen when the service starts.
     #[arg(long)]
     upstream_port: Option<u16>,
 
@@ -81,9 +82,11 @@ struct HttpArgs {
     #[arg(long)]
     cwd: Option<PathBuf>,
 
+    /// First port considered for automatic allocation.
     #[arg(long, default_value = "4000")]
     port_range_start: u16,
 
+    /// Last port considered for automatic allocation.
     #[arg(long, default_value = "4999")]
     port_range_end: u16,
 

@@ -5,4 +5,4 @@ node = "22.14.0"
 run = "npm install"
 
 [tasks.lazy]
-run = "cargo run --manifest-path ../../../Cargo.toml -- http fastify --cwd . --upstream-port 4104 -- node server.js"
+run = "cargo run --manifest-path ../../../Cargo.toml -- http fastify --cwd . -- node server.js"

@@ -6,17 +6,17 @@ windows:
       - shell_command:
           - cargo run -- proxy --listen 0.0.0.0:18443 --xip-domain "$(cat .lazy-example/xip-domain)" --xip-ip "$(cat .lazy-example/xip-ip)" --cert "$(cat .lazy-example/cert-path)" --key "$(cat .lazy-example/key-path)"
       - shell_command:
-          - cargo run -- http expo --daemon-timeout 10 --cwd examples/apps/expo --upstream-port 4101 -- npx expo start
+          - cargo run -- http expo --daemon-timeout 10 --cwd examples/apps/expo -- npx expo start
       - shell_command:
-          - cargo run -- http vite --daemon-timeout 10 --cwd examples/apps/vite --upstream-port 4102 -- npx vite dev
+          - cargo run -- http vite --daemon-timeout 10 --cwd examples/apps/vite -- npx vite dev
       - shell_command:
-          - cargo run -- http webpack --daemon-timeout 10 --cwd examples/apps/webpack --upstream-port 4103 -- npx webpack serve --config webpack.config.js
+          - cargo run -- http webpack --daemon-timeout 10 --cwd examples/apps/webpack -- npx webpack serve --config webpack.config.js
       - shell_command:
-          - cargo run -- http fastify --daemon-timeout 10 --cwd examples/apps/fastify --upstream-port 4104 -- node server.js
+          - cargo run -- http fastify --daemon-timeout 10 --cwd examples/apps/fastify -- node server.js
       - shell_command:
-          - cargo run -- http spring --daemon-timeout 10 --cwd examples/apps/spring --upstream-port 4105 -- mvn spring-boot:run
+          - cargo run -- http spring --daemon-timeout 10 --cwd examples/apps/spring -- mvn spring-boot:run
       - shell_command:
-          - cargo run -- http axum --daemon-timeout 10 --cwd examples/apps/axum --upstream-port 4106 -- cargo run
+          - cargo run -- http axum --daemon-timeout 10 --cwd examples/apps/axum -- cargo run
       - shell_command:
           - sleep 2
           - while true; do clear; cargo run -- status; sleep 2; done

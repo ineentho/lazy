@@ -5,4 +5,4 @@ rust = "1.96.0"
 run = "cargo fetch"
 
 [tasks.lazy]
-run = "cargo run --manifest-path ../../../Cargo.toml -- http axum --cwd . --upstream-port 4106 -- cargo run"
+run = "cargo run --manifest-path ../../../Cargo.toml -- http axum --cwd . -- cargo run"

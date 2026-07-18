@@ -5,4 +5,4 @@ node = "22.14.0"
 run = "npm install"
 
 [tasks.lazy]
-run = "cargo run --manifest-path ../../../Cargo.toml -- http expo --cwd . --upstream-port 4101 -- npx expo start"
+run = "cargo run --manifest-path ../../../Cargo.toml -- http expo --cwd . -- npx expo start"

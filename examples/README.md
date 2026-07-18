@@ -57,6 +57,8 @@ installs or refreshes dependencies, and then starts tmuxp.
 
 - Every runner uses `--daemon-timeout 10` so it can register while the proxy is
   starting without tmux-specific polling loops.
+- Upstream ports are allocated by the daemon when each app is activated and
+  released when it stops.
 - Vite and Expo are launched directly through `npx` so `lazy` can inject port
   flags automatically.
 - Webpack, Fastify, Spring, and Axum read `PORT` from the environment.

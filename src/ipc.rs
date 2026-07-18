@@ -20,8 +20,15 @@ pub enum RunnerMessage {
 pub struct Register {
     pub name: String,
     pub kind: ProcessKind,
-    pub upstream_port: Option<u16>,
+    pub port_request: Option<PortRequest>,
     pub active_while: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PortRequest {
+    Fixed { port: u16 },
+    Range { start: u16, end: u16 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,7 +42,7 @@ pub enum ProcessKind {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonMessage {
     Registered { url: Option<String> },
-    Start,
+    Start { port: Option<u16> },
     Stop,
     Error { message: String },
 }

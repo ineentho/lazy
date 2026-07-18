@@ -5,4 +5,4 @@ node = "22.14.0"
 run = "npm install"
 
 [tasks.lazy]
-run = "cargo run --manifest-path ../../../Cargo.toml -- http webpack --cwd . --upstream-port 4103 -- npx webpack serve --config webpack.config.js"
+run = "cargo run --manifest-path ../../../Cargo.toml -- http webpack --cwd . -- npx webpack serve --config webpack.config.js"
