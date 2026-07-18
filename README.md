@@ -41,6 +41,12 @@ Prebuilt binaries for Apple Silicon and Intel Macs, plus static ARM64 and
 x86-64 Linux binaries, are attached to each
 [GitHub release](https://github.com/ineentho/lazy/releases).
 
+Create the destination directory if needed:
+
+```sh
+mkdir -p ~/.local/bin
+```
+
 ### Linux
 
 For x86-64:
@@ -72,8 +78,17 @@ For Intel:
 curl -fL https://github.com/ineentho/lazy/releases/latest/download/lazy-x86_64-apple-darwin > ~/.local/bin/lazy && chmod +x ~/.local/bin/lazy
 ```
 
-The destination directory must already exist and be on your `PATH`. Use
-`SHA256SUMS` from the release to verify a binary before installing it.
+The destination directory must be on your `PATH`. Use `SHA256SUMS` from the
+release to verify a binary before installing it.
+
+### From source
+
+With a Rust toolchain installed, build and install the latest revision directly
+from the public repository:
+
+```sh
+cargo install --git https://github.com/ineentho/lazy --locked
+```
 
 ## Xip-style DNS and TLS
 
@@ -123,3 +138,8 @@ mise trust
 mise install
 mise run test
 ```
+
+## License
+
+Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT License](LICENSE-MIT), at your option.
