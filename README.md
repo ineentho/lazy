@@ -43,40 +43,38 @@ x86-64 Linux binaries, are attached to each
 
 ### Linux
 
+For x86-64:
+
 ```sh
-case "$(uname -m)" in
-  x86_64) asset=lazy-x86_64-unknown-linux-musl ;;
-  aarch64|arm64) asset=lazy-aarch64-unknown-linux-musl ;;
-  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-mkdir -p "$HOME/.local/bin"
-curl -fL "https://github.com/ineentho/lazy/releases/latest/download/$asset" \
-  -o "$HOME/.local/bin/lazy"
-chmod +x "$HOME/.local/bin/lazy"
-lazy --version
+curl -fL https://github.com/ineentho/lazy/releases/latest/download/lazy-x86_64-unknown-linux-musl > ~/.local/bin/lazy && chmod +x ~/.local/bin/lazy
 ```
 
-The Linux binaries are statically linked with musl and work on common
-distributions including Ubuntu, Debian, Fedora, Arch, and Alpine.
+For ARM64:
+
+```sh
+curl -fL https://github.com/ineentho/lazy/releases/latest/download/lazy-aarch64-unknown-linux-musl > ~/.local/bin/lazy && chmod +x ~/.local/bin/lazy
+```
+
+The Linux binaries are statically linked with musl and work on Ubuntu, Debian,
+Fedora, Arch, Alpine, and other common distributions.
 
 ### macOS
 
+For Apple Silicon:
+
 ```sh
-case "$(uname -m)" in
-  arm64) asset=lazy-aarch64-apple-darwin ;;
-  x86_64) asset=lazy-x86_64-apple-darwin ;;
-  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-mkdir -p "$HOME/.local/bin"
-curl -fL "https://github.com/ineentho/lazy/releases/latest/download/$asset" \
-  -o "$HOME/.local/bin/lazy"
-chmod +x "$HOME/.local/bin/lazy"
-lazy --version
+curl -fL https://github.com/ineentho/lazy/releases/latest/download/lazy-aarch64-apple-darwin > ~/.local/bin/lazy && chmod +x ~/.local/bin/lazy
 ```
 
-Ensure `$HOME/.local/bin` is on your `PATH`. These unauthenticated download
-commands will work once the repository is public. Use `SHA256SUMS` from the
-release to verify a binary before installing it.
+For Intel:
+
+```sh
+curl -fL https://github.com/ineentho/lazy/releases/latest/download/lazy-x86_64-apple-darwin > ~/.local/bin/lazy && chmod +x ~/.local/bin/lazy
+```
+
+The destination directory must already exist and be on your `PATH`. These
+unauthenticated downloads will work once the repository is public. Use
+`SHA256SUMS` from the release to verify a binary before installing it.
 
 ## Xip-style DNS and TLS
 
