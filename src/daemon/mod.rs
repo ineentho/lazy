@@ -1,6 +1,10 @@
 use anyhow::{Context, Result, anyhow};
 use std::{
-    collections::HashMap, fs::File, io::BufReader as StdBufReader, net::SocketAddr, path::PathBuf,
+    collections::HashMap,
+    fs::File,
+    io::BufReader as StdBufReader,
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
     sync::Arc,
 };
 use tokio::{
@@ -26,10 +30,76 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub suffix: String,
+    pub host_routing: HostRouting,
     pub listen: SocketAddr,
     pub route_host: Option<String>,
     pub tls: Option<TlsConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostRouting {
+    Suffix(String),
+    Xip(XipRouting),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XipRouting {
+    domain: String,
+    ip: Ipv4Addr,
+}
+
+impl HostRouting {
+    pub fn xip(domain: &str, ip: Ipv4Addr) -> Result<Self> {
+        let domain = normalize_domain(domain)?;
+        Ok(Self::Xip(XipRouting { domain, ip }))
+    }
+
+    fn hostname_for_service(&self, name: &str) -> Result<String> {
+        match self {
+            Self::Suffix(suffix) => {
+                if name.is_empty() {
+                    return Err(anyhow!("service name must not be empty"));
+                }
+                Ok(format!("{name}{suffix}"))
+            }
+            Self::Xip(config) => {
+                validate_dns_label(name, "service name")?;
+                let encoded_ip = config.ip.to_string().replace('.', "-");
+                let first_label = format!("{name}-{encoded_ip}");
+                if first_label.len() > 63 {
+                    return Err(anyhow!(
+                        "service name is too long for an xip hostname (the service and encoded IP must fit in one 63-character DNS label)"
+                    ));
+                }
+                let hostname = format!("{first_label}.{}", config.domain);
+                if hostname.len() > 253 {
+                    return Err(anyhow!("generated xip hostname exceeds 253 characters"));
+                }
+                Ok(hostname)
+            }
+        }
+    }
+
+    fn service_name_from_host(&self, host: &str) -> Option<String> {
+        match self {
+            Self::Suffix(suffix) => strip_suffix_ascii_case(host, suffix),
+            Self::Xip(config) => {
+                let encoded_ip = config.ip.to_string().replace('.', "-");
+                let suffix = format!("-{encoded_ip}.{}", config.domain);
+                strip_suffix_ascii_case(host, &suffix).map(|name| name.to_ascii_lowercase())
+            }
+        }
+        .filter(|name| !name.is_empty())
+    }
+
+    fn description(&self) -> String {
+        match self {
+            Self::Suffix(suffix) => format!("suffix {suffix:?}"),
+            Self::Xip(config) => {
+                format!("xip domain {:?} with address {}", config.domain, config.ip)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -40,7 +110,7 @@ pub struct TlsConfig {
 
 #[derive(Clone)]
 struct Registry {
-    suffix: String,
+    host_routing: HostRouting,
     listen: SocketAddr,
     route_host: Option<String>,
     tls_enabled: bool,
@@ -69,7 +139,7 @@ pub async fn run(config: Config) -> Result<()> {
     }
 
     let registry = Registry {
-        suffix: config.suffix.clone(),
+        host_routing: config.host_routing.clone(),
         listen: config.listen,
         route_host: config.route_host.clone(),
         tls_enabled: config.tls.is_some(),
@@ -87,8 +157,10 @@ pub async fn run(config: Config) -> Result<()> {
         "http"
     };
     println!(
-        "lazy proxy listening on {}://{} with suffix {:?}",
-        scheme, config.listen, config.suffix
+        "lazy proxy listening on {}://{} with {}",
+        scheme,
+        config.listen,
+        config.host_routing.description()
     );
     if let Some(route_host) = &config.route_host {
         println!("path routing host: {route_host}");
@@ -178,8 +250,11 @@ async fn handle_control(stream: UnixStream, registry: Registry) -> Result<()> {
     match message {
         SocketMessage::RunnerRegister { register } => {
             let (tx, mut rx) = mpsc::channel::<DaemonMessage>(16);
-            let url = (register.kind == ProcessKind::Http)
-                .then(|| registry.url_for_service(&register.name));
+            let url = if register.kind == ProcessKind::Http {
+                Some(registry.url_for_service(&register.name)?)
+            } else {
+                None
+            };
 
             registry.register(register.clone(), tx).await?;
             let mut stream = write_half.reunite(reader.into_inner())?;
@@ -371,12 +446,6 @@ impl Registry {
             .ok_or_else(|| anyhow!("service {name:?} has no upstream port"))
     }
 
-    fn service_name_from_host(&self, host: &str) -> Option<String> {
-        host.strip_suffix(&self.suffix)
-            .filter(|name| !name.is_empty())
-            .map(ToString::to_string)
-    }
-
     async fn route_for_request(&self, host: &str, buffer: &mut Vec<u8>) -> Option<ProxyRoute> {
         if self
             .route_host
@@ -391,16 +460,17 @@ impl Registry {
                 *buffer = original;
             }
 
-            if let Some(name) = route_name_from_referer(buffer, host) {
-                if self.has_service(&name).await {
-                    return Some(ProxyRoute { name });
-                }
+            if let Some(name) = route_name_from_referer(buffer, host)
+                && self.has_service(&name).await
+            {
+                return Some(ProxyRoute { name });
             }
 
             return None;
         }
 
-        self.service_name_from_host(host)
+        self.host_routing
+            .service_name_from_host(host)
             .map(|name| ProxyRoute { name })
     }
 
@@ -428,6 +498,7 @@ impl Registry {
             };
             let url = if service.register.kind == ProcessKind::Http {
                 self.url_for_service(name)
+                    .unwrap_or_else(|error| format!("invalid service name: {error}"))
             } else {
                 "-".to_string()
             };
@@ -442,26 +513,77 @@ impl Registry {
         rows.join("\n")
     }
 
-    fn url_for_service(&self, name: &str) -> String {
+    fn url_for_service(&self, name: &str) -> Result<String> {
         if let Some(route_host) = &self.route_host {
             let port = self.listen.port();
             let scheme = if self.tls_enabled { "https" } else { "http" };
             let default_port = if self.tls_enabled { 443 } else { 80 };
             if port == default_port {
-                return format!("{}://{}/{}/", scheme, route_host, name);
+                return Ok(format!("{}://{}/{}/", scheme, route_host, name));
             }
-            return format!("{}://{}:{}/{}/", scheme, route_host, port, name);
+            return Ok(format!("{}://{}:{}/{}/", scheme, route_host, port, name));
         }
 
+        let hostname = self.host_routing.hostname_for_service(name)?;
         let port = self.listen.port();
         let scheme = if self.tls_enabled { "https" } else { "http" };
         let default_port = if self.tls_enabled { 443 } else { 80 };
         if port == default_port {
-            format!("{}://{}{}", scheme, name, self.suffix)
+            Ok(format!("{scheme}://{hostname}"))
         } else {
-            format!("{}://{}{}:{}", scheme, name, self.suffix, port)
+            Ok(format!("{scheme}://{hostname}:{port}"))
         }
     }
+}
+
+fn normalize_domain(domain: &str) -> Result<String> {
+    let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    if domain.is_empty() {
+        return Err(anyhow!("xip domain must not be empty"));
+    }
+    if domain.len() > 253 {
+        return Err(anyhow!("xip domain exceeds 253 characters"));
+    }
+    for label in domain.split('.') {
+        validate_dns_label(label, "xip domain label")?;
+    }
+    Ok(domain)
+}
+
+fn validate_dns_label(label: &str, description: &str) -> Result<()> {
+    if label.is_empty() {
+        return Err(anyhow!("{description} must not be empty"));
+    }
+    if label.len() > 63 {
+        return Err(anyhow!("{description} exceeds 63 characters"));
+    }
+    if !label.is_ascii() {
+        return Err(anyhow!("{description} must contain only ASCII characters"));
+    }
+    if !label
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(anyhow!(
+            "{description} must contain only lowercase letters, digits, and hyphens"
+        ));
+    }
+    if label.starts_with('-') || label.ends_with('-') {
+        return Err(anyhow!(
+            "{description} must start and end with a letter or digit"
+        ));
+    }
+    Ok(())
+}
+
+fn strip_suffix_ascii_case(value: &str, suffix: &str) -> Option<String> {
+    if !value.is_ascii() || !suffix.is_ascii() || value.len() < suffix.len() {
+        return None;
+    }
+    let split = value.len() - suffix.len();
+    value[split..]
+        .eq_ignore_ascii_case(suffix)
+        .then(|| value[..split].to_string())
 }
 
 fn rewrite_path_route(buffer: &mut Vec<u8>) -> Option<String> {
@@ -526,4 +648,104 @@ fn parse_header<'a>(buffer: &'a [u8], header: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry(host_routing: HostRouting, port: u16, tls_enabled: bool) -> Registry {
+        Registry {
+            host_routing,
+            listen: SocketAddr::from(([127, 0, 0, 1], port)),
+            route_host: None,
+            tls_enabled,
+            services: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[test]
+    fn xip_routing_generates_wildcard_compatible_hostname() {
+        let routing = HostRouting::xip("XIP.EXAMPLE.COM.", Ipv4Addr::new(192, 0, 2, 10)).unwrap();
+
+        assert_eq!(
+            routing.hostname_for_service("vite").unwrap(),
+            "vite-192-0-2-10.xip.example.com"
+        );
+    }
+
+    #[test]
+    fn xip_routing_extracts_service_case_insensitively() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(192, 0, 2, 10)).unwrap();
+
+        assert_eq!(
+            routing.service_name_from_host("VITE-192-0-2-10.XIP.EXAMPLE.COM"),
+            Some("vite".to_string())
+        );
+        assert_eq!(
+            routing.service_name_from_host("vite-192-0-2-11.xip.example.com"),
+            None
+        );
+    }
+
+    #[test]
+    fn xip_urls_use_https_and_omit_the_default_port() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(192, 0, 2, 10)).unwrap();
+        let default_tls = registry(routing.clone(), 443, true);
+        let custom_tls = registry(routing, 18443, true);
+
+        assert_eq!(
+            default_tls.url_for_service("vite").unwrap(),
+            "https://vite-192-0-2-10.xip.example.com"
+        );
+        assert_eq!(
+            custom_tls.url_for_service("vite").unwrap(),
+            "https://vite-192-0-2-10.xip.example.com:18443"
+        );
+    }
+
+    #[test]
+    fn localhost_suffix_routing_remains_supported() {
+        let routing = HostRouting::Suffix(".localhost".to_string());
+        let registry = registry(routing.clone(), 8080, false);
+
+        assert_eq!(
+            routing.service_name_from_host("VITE.LOCALHOST"),
+            Some("VITE".to_string())
+        );
+        assert_eq!(
+            registry.url_for_service("vite").unwrap(),
+            "http://vite.localhost:8080"
+        );
+    }
+
+    #[test]
+    fn xip_routing_rejects_invalid_domains_and_service_names() {
+        assert!(HostRouting::xip("bad_domain.example", Ipv4Addr::LOCALHOST).is_err());
+        assert!(HostRouting::xip("xip..example.com", Ipv4Addr::LOCALHOST).is_err());
+
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::LOCALHOST).unwrap();
+        assert!(routing.hostname_for_service("Vite").is_err());
+        assert!(routing.hostname_for_service("vite.dev").is_err());
+        assert!(routing.hostname_for_service("-vite").is_err());
+    }
+
+    #[test]
+    fn xip_routing_rejects_service_names_that_overflow_the_first_label() {
+        let routing =
+            HostRouting::xip("xip.example.com", Ipv4Addr::new(255, 255, 255, 255)).unwrap();
+        let service = "a".repeat(48);
+
+        assert!(routing.hostname_for_service(&service).is_err());
+    }
+
+    #[test]
+    fn parse_host_accepts_a_port() {
+        let request = b"GET / HTTP/1.1\r\nHost: vite-192-0-2-10.xip.example.com:18443\r\n\r\n";
+
+        assert_eq!(
+            parse_host(request).as_deref(),
+            Some("vite-192-0-2-10.xip.example.com")
+        );
+    }
 }

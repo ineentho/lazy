@@ -38,16 +38,16 @@ pub fn prepare_framework_args(
         }
     }
 
-    if !has_flag(argv, "--host") {
-        if let Some(host) = host {
-            let host = if framework.name == "expo" {
-                "localhost"
-            } else {
-                host
-            };
-            argv.push("--host".to_string());
-            argv.push(host.to_string());
-        }
+    if !has_flag(argv, "--host")
+        && let Some(host) = host
+    {
+        let host = if framework.name == "expo" {
+            "localhost"
+        } else {
+            host
+        };
+        argv.push("--host".to_string());
+        argv.push(host.to_string());
     }
 }
 

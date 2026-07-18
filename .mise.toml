@@ -19,23 +19,50 @@ run = "cargo test"
 description = "Query the example lazy daemon"
 run = "cargo run -- status"
 
-[tasks.example-prepare]
+[tasks.example-deps]
 description = "Install dependencies for every example app"
 run = """
 set -eu
-mkdir -p "$LAZY_EXAMPLE_CERT_DIR"
-domain="$(tailscale status --json | node -e 'let s = ""; process.stdin.on("data", d => s += d); process.stdin.on("end", () => { const j = JSON.parse(s); const domain = (j.CertDomains && j.CertDomains[0]) || (j.Self && j.Self.DNSName && j.Self.DNSName.replace(/\\.$/, "")); if (!domain) process.exit(1); console.log(domain); })')"
-printf '%s\\n' "$domain" > "$LAZY_EXAMPLE_CERT_DIR/tailscale-domain"
-tailscale cert \
-  --cert-file "$LAZY_EXAMPLE_CERT_DIR/tailscale.crt" \
-  --key-file "$LAZY_EXAMPLE_CERT_DIR/tailscale.key" \
-  "$domain"
 (cd examples/apps/expo && npm ci)
 (cd examples/apps/vite && npm ci)
 (cd examples/apps/webpack && npm ci)
 (cd examples/apps/fastify && npm ci)
 (cd examples/apps/spring && mvn -q -DskipTests dependency:go-offline)
 (cd examples/apps/axum && cargo fetch)
+"""
+
+[tasks.example-prepare]
+description = "Validate and record the xip example configuration"
+depends = ["example-deps"]
+run = """
+set -eu
+domain="${LAZY_EXAMPLE_XIP_DOMAIN:-xip.example.com}"
+ip="${LAZY_EXAMPLE_XIP_IP:-127.0.0.1}"
+cert="${LAZY_EXAMPLE_CERT:-$LAZY_EXAMPLE_CERT_DIR/xip.example.com.crt}"
+key="${LAZY_EXAMPLE_KEY:-$LAZY_EXAMPLE_CERT_DIR/xip.example.com.key}"
+
+python - "$ip" <<'PYTHON'
+import ipaddress
+import sys
+ipaddress.IPv4Address(sys.argv[1])
+PYTHON
+
+if [ ! -r "$cert" ]; then
+  printf 'Missing readable wildcard certificate: %s\\n' "$cert" >&2
+  printf 'Set LAZY_EXAMPLE_CERT to the certificate for *.%s.\\n' "$domain" >&2
+  exit 1
+fi
+if [ ! -r "$key" ]; then
+  printf 'Missing readable private key: %s\\n' "$key" >&2
+  printf 'Set LAZY_EXAMPLE_KEY to its path.\\n' >&2
+  exit 1
+fi
+
+mkdir -p "$LAZY_EXAMPLE_CERT_DIR"
+printf '%s\\n' "$domain" > "$LAZY_EXAMPLE_CERT_DIR/xip-domain"
+printf '%s\\n' "$ip" > "$LAZY_EXAMPLE_CERT_DIR/xip-ip"
+printf '%s\\n' "$cert" > "$LAZY_EXAMPLE_CERT_DIR/cert-path"
+printf '%s\\n' "$key" > "$LAZY_EXAMPLE_CERT_DIR/key-path"
 """
 
 [tasks.example-stack]
