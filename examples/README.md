@@ -17,10 +17,8 @@ Point the example at an xip-style DNS zone, the IPv4 address that its hostnames
 should resolve to, and an existing wildcard certificate and key:
 
 ```sh
-export LAZY_EXAMPLE_XIP_DOMAIN=xip.example.com
-export LAZY_EXAMPLE_XIP_IP=192.0.2.10
-export LAZY_EXAMPLE_CERT=/path/to/xip.example.com.crt
-export LAZY_EXAMPLE_KEY=/path/to/xip.example.com.key
+cp .env.example .env
+# Edit .env with your DNS zone, reachable IP, certificate, and key paths.
 mise run example-stack
 ```
 
@@ -41,14 +39,12 @@ https://axum-192-0-2-10.xip.example.com:18443
 The service name and encoded IP share one DNS label. This lets a normal
 `*.xip.example.com` wildcard certificate cover every generated hostname.
 Certificate issuance and renewal stay outside `lazy`; the stack only reads the
-paths supplied above. The paths and resolved settings are recorded under the
-ignored `.lazy-example/` directory for tmuxp.
+paths supplied in the ignored `.env` file. Mise loads that file for the
+validation task and tmuxp stack.
 
-`mise run example-stack` validates the xip settings and certificate paths,
-then starts tmuxp. Each app installs or fetches missing dependencies when it is
-first activated.
-After the first configured run, it reuses the settings recorded in
-`.lazy-example/`, so the environment variables do not need to be exported again.
+`mise run example-stack` starts tmuxp. Each app installs or fetches missing
+dependencies when it is first activated. Invalid proxy settings are reported in
+the proxy pane.
 
 ## Notes
 

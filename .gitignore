@@ -5,4 +5,4 @@ dist/
 .expo/
 .expo-shared/
 .lazy-*-ready
-.lazy-example/
+.env
