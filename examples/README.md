@@ -52,6 +52,8 @@ mise run example-deps
 
 `mise run example-stack` validates the xip settings and certificate paths,
 installs or refreshes dependencies, and then starts tmuxp.
+After the first configured run, it reuses the settings recorded in
+`.lazy-example/`, so the environment variables do not need to be exported again.
 
 ## Notes
 

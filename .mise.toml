@@ -6,6 +6,7 @@ java = "23.0.2"
 maven = "3.9.16"
 uv = "latest"
 tmux = "3.6a"
+"pipx:tmuxp" = "1.74.0"
 
 [env]
 LAZY_EXAMPLE_PROXY = "0.0.0.0:18443"
@@ -36,10 +37,15 @@ description = "Validate and record the xip example configuration"
 depends = ["example-deps"]
 run = """
 set -eu
-domain="${LAZY_EXAMPLE_XIP_DOMAIN:-xip.example.com}"
-ip="${LAZY_EXAMPLE_XIP_IP:-127.0.0.1}"
-cert="${LAZY_EXAMPLE_CERT:-$LAZY_EXAMPLE_CERT_DIR/xip.example.com.crt}"
-key="${LAZY_EXAMPLE_KEY:-$LAZY_EXAMPLE_CERT_DIR/xip.example.com.key}"
+saved_domain="$(cat "$LAZY_EXAMPLE_CERT_DIR/xip-domain" 2>/dev/null || true)"
+saved_ip="$(cat "$LAZY_EXAMPLE_CERT_DIR/xip-ip" 2>/dev/null || true)"
+saved_cert="$(cat "$LAZY_EXAMPLE_CERT_DIR/cert-path" 2>/dev/null || true)"
+saved_key="$(cat "$LAZY_EXAMPLE_CERT_DIR/key-path" 2>/dev/null || true)"
+
+domain="${LAZY_EXAMPLE_XIP_DOMAIN:-${saved_domain:-xip.example.com}}"
+ip="${LAZY_EXAMPLE_XIP_IP:-${saved_ip:-127.0.0.1}}"
+cert="${LAZY_EXAMPLE_CERT:-${saved_cert:-$LAZY_EXAMPLE_CERT_DIR/xip.example.com.crt}}"
+key="${LAZY_EXAMPLE_KEY:-${saved_key:-$LAZY_EXAMPLE_CERT_DIR/xip.example.com.key}}"
 
 python - "$ip" <<'PYTHON'
 import ipaddress
@@ -68,4 +74,4 @@ printf '%s\\n' "$key" > "$LAZY_EXAMPLE_CERT_DIR/key-path"
 [tasks.example-stack]
 description = "Load the tmuxp real-world example stack"
 depends = ["example-prepare"]
-run = "uvx tmuxp load examples/tmuxp.yaml"
+run = "tmuxp load -y examples/tmuxp.yaml"

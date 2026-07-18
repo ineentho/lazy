@@ -1,8 +1,0 @@
-[tools]
-node = "22.14.0"
-
-[tasks.install]
-run = "npm install"
-
-[tasks.lazy]
-run = "cargo run --manifest-path ../../../Cargo.toml -- http vite --cwd . -- npx vite dev"
