@@ -1,0 +1,4 @@
+[workspace]
+# lazy is distributed through GitHub Releases rather than crates.io.
+git_only = true
+release_always = false

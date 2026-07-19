@@ -190,6 +190,17 @@ mise install
 mise run test
 ```
 
+## Releases
+
+[`release-plz`](https://release-plz.dev/) maintains a release PR with the next
+version and changelog. Merging that PR creates the matching `vX.Y.Z` tag and
+GitHub release, then dispatches the release workflow to build, smoke-test, and
+attach all four platform binaries plus `SHA256SUMS`.
+
+The repository setting **Allow GitHub Actions to create and approve pull
+requests** must be enabled so the workflow can maintain the release PR. Manual
+`vX.Y.Z` tags remain supported as a fallback and run the same binary workflow.
+
 ## License
 
 Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or

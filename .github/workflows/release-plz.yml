@@ -1,0 +1,87 @@
+name: release-plz
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Create release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Create tag and GitHub release
+        id: release
+        uses: release-plz/action@v0.5.131
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags created with GITHUB_TOKEN do not start other workflows. Dispatch
+      # the existing binary workflow explicitly so no PAT is required.
+      - name: Build release binaries
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASES: ${{ steps.release.outputs.releases }}
+        shell: bash
+        run: |
+          release_count="$(jq 'length' <<< "$RELEASES")"
+          if [[ "$release_count" != 1 ]]; then
+            echo "expected one release, got $release_count" >&2
+            exit 1
+          fi
+
+          release_tag="$(jq -r '.[0].tag' <<< "$RELEASES")"
+          curl --fail-with-body --location --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" \
+            --data "$(jq -nc --arg ref "$release_tag" \
+              '{ref: $ref, inputs: {generate_release_notes: "false"}}')"
+
+  release-pr:
+    name: Update release PR
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Create or update release PR
+        uses: release-plz/action@v0.5.131
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
