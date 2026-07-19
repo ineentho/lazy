@@ -1,0 +1,45 @@
+name: Bug report
+description: Report reproducible incorrect behavior in lazy
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Search existing issues first. For security vulnerabilities, use the
+        private reporting link in SECURITY.md instead.
+  - type: input
+    id: version
+    attributes:
+      label: lazy version
+      description: Output of `lazy --version`.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system and CPU architecture.
+      placeholder: macOS 15, Apple Silicon
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal commands or repository needed to reproduce the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and logs
+      render: shell
+    validations:
+      required: true

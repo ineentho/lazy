@@ -15,11 +15,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run the local HTTP/TLS proxy and control daemon.
     Proxy(ProxyArgs),
+    /// Register an on-demand HTTP development server.
     Http(HttpArgs),
+    /// Register an on-demand background process.
     Worker(WorkerArgs),
+    /// List registered services and their current state.
     Status,
+    /// Start a registered service without waiting for traffic.
     Start(ServiceArgs),
+    /// Stop a registered service.
     Stop(ServiceArgs),
 }
 
@@ -45,6 +51,7 @@ struct ProxyArgs {
     )]
     xip_ip: Option<Ipv4Addr>,
 
+    /// Address on which the proxy accepts HTTP or HTTPS connections.
     #[arg(long, default_value = "127.0.0.1:8080")]
     listen: String,
 
@@ -63,6 +70,7 @@ struct ProxyArgs {
 
 #[derive(Args)]
 struct HttpArgs {
+    /// Service name used in the generated hostname or path.
     name: String,
 
     /// How long to wait for the lazy daemon before failing.
@@ -77,9 +85,11 @@ struct HttpArgs {
     #[arg(long)]
     upstream_port: Option<u16>,
 
-    #[arg(long)]
+    /// Framework hint used when the command cannot be detected automatically.
+    #[arg(long, value_name = "NAME")]
     framework: Option<String>,
 
+    /// Working directory in which to run the command.
     #[arg(long)]
     cwd: Option<PathBuf>,
 
@@ -91,12 +101,14 @@ struct HttpArgs {
     #[arg(long, default_value = "4999")]
     port_range_end: u16,
 
+    /// Command to start when the service is activated.
     #[arg(last = true, required = true)]
     command: Vec<String>,
 }
 
 #[derive(Args)]
 struct WorkerArgs {
+    /// Name used by start, stop, and status.
     name: String,
 
     /// How long to wait for the lazy daemon before failing.
@@ -107,12 +119,14 @@ struct WorkerArgs {
     )]
     daemon_timeout: Option<u64>,
 
+    /// Command to start when the worker is activated.
     #[arg(last = true, required = true)]
     command: Vec<String>,
 }
 
 #[derive(Args)]
 struct ServiceArgs {
+    /// Registered service name.
     name: String,
 }
 

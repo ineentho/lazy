@@ -1,9 +1,8 @@
 use anyhow::{Context, Result, anyhow};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use std::{
     collections::HashMap,
-    fs::File,
     future::Future,
-    io::BufReader as StdBufReader,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
@@ -14,13 +13,7 @@ use tokio::{
     sync::{Mutex, mpsc, oneshot},
     time::{Duration, timeout},
 };
-use tokio_rustls::{
-    TlsAcceptor,
-    rustls::{
-        ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer},
-    },
-};
+use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 
 use crate::{
     ipc::{
@@ -252,10 +245,8 @@ fn load_tls_acceptor(config: TlsConfig) -> Result<TlsAcceptor> {
 }
 
 fn load_certs(path: &PathBuf) -> Result<Vec<CertificateDer<'static>>> {
-    let file = File::open(path)
-        .with_context(|| format!("could not open TLS certificate {}", path.display()))?;
-    let mut reader = StdBufReader::new(file);
-    let certs = rustls_pemfile::certs(&mut reader)
+    let certs = CertificateDer::pem_file_iter(path)
+        .with_context(|| format!("could not open TLS certificate {}", path.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()
         .with_context(|| format!("could not read PEM certificates from {}", path.display()))?;
     if certs.is_empty() {
@@ -265,12 +256,8 @@ fn load_certs(path: &PathBuf) -> Result<Vec<CertificateDer<'static>>> {
 }
 
 fn load_private_key(path: &PathBuf) -> Result<PrivateKeyDer<'static>> {
-    let file =
-        File::open(path).with_context(|| format!("could not open TLS key {}", path.display()))?;
-    let mut reader = StdBufReader::new(file);
-    rustls_pemfile::private_key(&mut reader)
-        .with_context(|| format!("could not read PEM private key from {}", path.display()))?
-        .ok_or_else(|| anyhow!("no private key found in {}", path.display()))
+    PrivateKeyDer::from_pem_file(path)
+        .with_context(|| format!("could not read PEM private key from {}", path.display()))
 }
 
 async fn handle_control(stream: UnixStream, registry: Registry) -> Result<()> {

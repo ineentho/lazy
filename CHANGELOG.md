@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Document the supported platforms, command lifecycle, worker usage, minimum
+  Rust version, and security reporting process.
+- Improve built-in command help and refresh JavaScript example dependencies.
+
+### Security
+
+- Remove known vulnerable versions from the checked-in JavaScript example
+  lockfiles and add monthly Dependabot update configuration.
+- Replace the unmaintained `rustls-pemfile` dependency with the maintained PEM
+  parser in `rustls-pki-types`.
+
 ## [0.1.3](https://github.com/ineentho/lazy/compare/v0.1.2...v0.1.3) - 2026-07-19
 
 ### Fixed

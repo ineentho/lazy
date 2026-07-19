@@ -1,0 +1,34 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: cargo
+    directory: /examples/apps/axum
+    schedule:
+      interval: monthly
+  - package-ecosystem: maven
+    directory: /examples/apps/spring
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: /examples/apps/expo
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: /examples/apps/fastify
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: /examples/apps/vite
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: /examples/apps/webpack
+    schedule:
+      interval: monthly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

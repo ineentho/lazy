@@ -5,31 +5,61 @@ a local proxy but remain dormant until their hostname receives traffic. The
 proxy starts the matching command, waits for its loopback port to become ready,
 and then forwards the connection.
 
-## Localhost routing
+`lazy` is an early-stage project for macOS and Linux. Its command-line interface
+may change before 1.0. Windows is not currently supported.
 
-Start the proxy:
+## Quick start
 
-```sh
-cargo run -- proxy
-```
-
-Register a development server in another terminal:
+Install a release using one of the methods below, then start the proxy:
 
 ```sh
-cargo run -- http vite -- pnpm dlx vite dev
+lazy proxy
 ```
 
-The service is available at `http://vite.localhost:8080`. Visiting it activates
-the dormant Vite process. Its upstream port is allocated at activation time
-and injected into the command. `lazy status`, `lazy start vite`, and
-`lazy stop vite` provide manual control.
+Register a development server in another terminal. The runner remains open and
+owns the child process:
+
+```sh
+lazy http vite -- pnpm dlx vite dev
+```
+
+Visit <http://vite.localhost:8080>. The first request starts Vite, waits for its
+loopback port, and then continues to the app. The upstream port is allocated at
+activation time and injected into the command.
+
+Use the control commands from any terminal:
+
+```sh
+lazy status
+lazy start vite
+lazy stop vite
+```
+
+Both the proxy and runner are foreground processes. Stop either with `Ctrl-C`;
+the runner stops its active child when it disconnects from the proxy.
+
+## HTTP services and workers
+
+HTTP commands receive `PORT`, `HOST`, and `LAZY_URL` environment variables.
+`lazy` also detects Vite, Vite+, React Router, Rsbuild, Astro, Angular,
+React Native, and Expo commands and supplies their port and host flags. Use
+`--framework NAME` when a package script hides the framework executable, or
+`--upstream-port PORT` for a server that must use a fixed port.
+
+Workers have no URL and start only when explicitly requested:
+
+```sh
+lazy worker jobs -- ./run-jobs
+lazy start jobs
+lazy stop jobs
+```
 
 When a process manager starts runners alongside the proxy, let each runner
 wait briefly for the daemon instead of adding shell polling:
 
 ```sh
-cargo run -- http vite --daemon-timeout 10 -- pnpm dlx vite dev
-cargo run -- worker jobs --daemon-timeout 10 -- ./run-jobs
+lazy http vite --daemon-timeout 10 -- pnpm dlx vite dev
+lazy worker jobs --daemon-timeout 10 -- ./run-jobs
 ```
 
 Without `--daemon-timeout`, both commands retain their immediate connection
@@ -52,7 +82,7 @@ interfaces and restrict the port to intended peers with a host firewall or
 tailnet ACL:
 
 ```sh
-cargo run -- proxy \
+lazy proxy \
   --listen 100.64.0.10:8443
 ```
 
@@ -143,7 +173,7 @@ without creating one DNS record per service. This loopback-only example uses
 the zone `xip.example.com` and the address `127.0.0.1`:
 
 ```sh
-cargo run -- proxy \
+lazy proxy \
   --listen 127.0.0.1:443 \
   --xip-domain xip.example.com \
   --xip-ip 127.0.0.1 \
@@ -189,6 +219,17 @@ mise trust
 mise install
 mise run test
 ```
+
+Without mise, install Rust 1.88 or newer and run:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --all-targets --locked
+```
+
+Please report security issues using the process in
+[SECURITY.md](SECURITY.md).
 
 ## Releases
 

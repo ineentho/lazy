@@ -8,11 +8,11 @@
     "start": "expo start"
   },
   "dependencies": {
-    "@expo/metro-runtime": "^5.0.0",
-    "expo": "^53.0.0",
-    "react": "19.0.0",
-    "react-dom": "19.0.0",
-    "react-native": "0.79.6",
-    "react-native-web": "^0.20.0"
+    "@expo/metro-runtime": "^57.0.6",
+    "expo": "^57.0.7",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-native": "0.86.0",
+    "react-native-web": "^0.21.2"
   }
 }
