@@ -203,11 +203,20 @@ mod tests {
 
     #[test]
     fn proxy_defaults_to_localhost_suffix_routing() {
-        let routing = host_routing(&proxy_args(&[])).unwrap();
+        let args = proxy_args(&[]);
+        let routing = host_routing(&args).unwrap();
         assert_eq!(
             routing,
             daemon::HostRouting::Suffix(".localhost".to_string())
         );
+        assert_eq!(args.listen, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn proxy_parses_non_loopback_listener() {
+        let args = proxy_args(&["--listen", "100.64.0.10:8443"]);
+
+        assert_eq!(args.listen, "100.64.0.10:8443");
     }
 
     #[test]
