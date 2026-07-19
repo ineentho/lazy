@@ -33,7 +33,6 @@ pub struct WorkerConfig {
     pub name: String,
     pub command: Vec<String>,
     pub daemon_timeout: Option<Duration>,
-    pub active_while: Vec<String>,
 }
 
 struct RunningProcess {
@@ -61,7 +60,6 @@ pub async fn run_http(config: HttpConfig) -> Result<()> {
             name: config.name.clone(),
             kind: ProcessKind::Http,
             port_request: Some(port_request),
-            active_while: Vec::new(),
         },
         config.daemon_timeout,
     )
@@ -89,7 +87,6 @@ pub async fn run_worker(config: WorkerConfig) -> Result<()> {
             name: config.name.clone(),
             kind: ProcessKind::Worker,
             port_request: None,
-            active_while: config.active_while,
         },
         config.daemon_timeout,
     )

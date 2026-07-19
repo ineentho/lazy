@@ -107,9 +107,6 @@ struct WorkerArgs {
     )]
     daemon_timeout: Option<u64>,
 
-    #[arg(long = "while")]
-    active_while: Vec<String>,
-
     #[arg(last = true, required = true)]
     command: Vec<String>,
 }
@@ -162,7 +159,6 @@ pub async fn run() -> Result<()> {
                 name: args.name,
                 command: args.command,
                 daemon_timeout: args.daemon_timeout.map(Duration::from_secs),
-                active_while: args.active_while,
             })
             .await
         }

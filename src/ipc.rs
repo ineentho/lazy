@@ -21,7 +21,6 @@ pub struct Register {
     pub name: String,
     pub kind: ProcessKind,
     pub port_request: Option<PortRequest>,
-    pub active_while: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
