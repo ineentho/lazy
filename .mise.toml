@@ -9,7 +9,6 @@ tmux = "3.6a"
 
 [env]
 _.file = ".env"
-LAZY_EXAMPLE_PROXY = "0.0.0.0:18443"
 
 [tasks.test]
 description = "Run the root Rust test suite"

@@ -14,26 +14,26 @@ mise install
 ```
 
 Point the example at an xip-style DNS zone, the IPv4 address that its hostnames
-should resolve to, and an existing wildcard certificate and key:
+should resolve to, and an existing wildcard certificate and key. The checked-in
+example configuration is loopback-only:
 
 ```sh
 cp .env.example .env
-# Edit .env with your DNS zone, reachable IP, certificate, and key paths.
+# Edit .env with your DNS zone, loopback IP, certificate, and key paths.
 mise run example-stack
 ```
 
-Replace the documentation values with a real delegated zone, a reachable LAN,
-tailnet, or public IPv4 address, and the locally held certificate for
-`*.xip.example.com`. The proxy listens on `0.0.0.0:18443` and gives every
-app its own hostname:
+Replace the documentation values with a real delegated zone and the locally
+held certificate for `*.xip.example.com`. By default the proxy listens on
+`127.0.0.1:18443` and gives every app its own hostname:
 
 ```text
-https://expo-192-0-2-10.xip.example.com:18443
-https://vite-192-0-2-10.xip.example.com:18443
-https://webpack-192-0-2-10.xip.example.com:18443
-https://fastify-192-0-2-10.xip.example.com:18443
-https://spring-192-0-2-10.xip.example.com:18443
-https://axum-192-0-2-10.xip.example.com:18443
+https://expo-127-0-0-1.xip.example.com:18443
+https://vite-127-0-0-1.xip.example.com:18443
+https://webpack-127-0-0-1.xip.example.com:18443
+https://fastify-127-0-0-1.xip.example.com:18443
+https://spring-127-0-0-1.xip.example.com:18443
+https://axum-127-0-0-1.xip.example.com:18443
 ```
 
 The service name and encoded IP share one DNS label. This lets a normal
@@ -41,6 +41,13 @@ The service name and encoded IP share one DNS label. This lets a normal
 Certificate issuance and renewal stay outside `lazy`; the stack only reads the
 paths supplied in the ignored `.env` file. Mise loads that file for the
 validation task and tmuxp stack.
+
+`lazy` has no client authentication: every client that can reach the listener
+can activate and access every registered app. To share the example on a trusted
+LAN or tailnet, set both `LAZY_EXAMPLE_PROXY` and `LAZY_EXAMPLE_XIP_IP` to the
+same specific reachable IP and restrict TCP port 18443 to intended peers with a
+firewall or tailnet ACL. Direct public-internet exposure is unsupported. Use an
+authenticated gateway in front of a loopback-bound proxy instead.
 
 `mise run example-stack` starts tmuxp. Each app installs or fetches missing
 dependencies when it is first activated. Invalid proxy settings are reported in

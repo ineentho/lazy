@@ -35,6 +35,52 @@ cargo run -- worker jobs --daemon-timeout 10 -- ./run-jobs
 Without `--daemon-timeout`, both commands retain their immediate connection
 behavior.
 
+## Security model
+
+`lazy` is an unauthenticated development proxy. **Any client that can reach its
+listener can activate and access any registered HTTP service whose hostname it
+requests.** Service names and generated URLs are not credentials. Development
+servers often expose source maps, debug endpoints, local data, and write-capable
+APIs, so keep the default loopback listener unless network sharing is necessary.
+
+TLS encrypts traffic and lets clients authenticate the server certificate. It
+does not authenticate clients: `lazy` does not provide passwords, sessions,
+authorization rules, or mutual TLS.
+
+For LAN or tailnet use, bind a specific trusted interface rather than all
+interfaces and restrict the port to intended peers with a host firewall or
+tailnet ACL:
+
+```sh
+cargo run -- proxy \
+  --listen 100.64.0.10:8443
+```
+
+`lazy` prints a warning when listening outside loopback because the listener
+itself provides no access control. Direct public-internet exposure is
+unsupported. If public access is required, keep `lazy` on loopback and place an
+authenticated, rate-limited gateway in front of it.
+
+The trust boundaries are:
+
+- **Network clients:** untrusted unless admitted by a firewall, private-tailnet
+  policy, or authenticated gateway. An admitted client has full HTTP access to
+  routed development services and can wake dormant services.
+- **Control socket:** `~/.lazy/lazy.sock` is restricted to the current OS user.
+  Same-user processes are trusted and can register, start, stop, and inspect
+  services.
+- **Runner commands:** commands registered with `lazy http` or `lazy worker`
+  execute with the user's privileges and are fully trusted. Explicit command
+  flags can make an upstream listen beyond loopback.
+- **Applications:** upstream traffic is plain HTTP over loopback. Applications
+  remain responsible for authentication, authorization, CSRF protection, and
+  safe debug configuration; `lazy` does not sanitize requests or responses.
+
+TLS handshakes, HTTP request headers, and upstream connection establishment are
+time-bounded, and request headers are limited to 64 KiB. Established proxy
+connections have no idle timeout so WebSockets, server-sent events, and other
+long-lived development connections continue to work.
+
 ## Installation
 
 Prebuilt binaries for Apple Silicon and Intel Macs, plus static ARM64 and
@@ -92,15 +138,15 @@ cargo install --git https://github.com/ineentho/lazy --locked
 
 ## Xip-style DNS and TLS
 
-An authoritative xip-style DNS zone can expose the same proxy to other
-machines without creating one DNS record per service. Given the zone
-`xip.example.com` and the address `192.0.2.10`, start the proxy with:
+An authoritative xip-style DNS zone can route multiple service hostnames
+without creating one DNS record per service. This loopback-only example uses
+the zone `xip.example.com` and the address `127.0.0.1`:
 
 ```sh
 cargo run -- proxy \
-  --listen 0.0.0.0:443 \
+  --listen 127.0.0.1:443 \
   --xip-domain xip.example.com \
-  --xip-ip 192.0.2.10 \
+  --xip-ip 127.0.0.1 \
   --cert /path/to/xip.example.com.crt \
   --key /path/to/xip.example.com.key
 ```
@@ -108,8 +154,8 @@ cargo run -- proxy \
 Registering services named `vite` and `api` publishes these URLs:
 
 ```text
-https://vite-192-0-2-10.xip.example.com
-https://api-192-0-2-10.xip.example.com
+https://vite-127-0-0-1.xip.example.com
+https://api-127-0-0-1.xip.example.com
 ```
 
 The DNS server must resolve hostnames containing the encoded IPv4 address to
@@ -120,6 +166,11 @@ a certificate for `*.xip.example.com` covers every generated hostname.
 to each service over plain HTTP on `127.0.0.1`. Certificate issuance, renewal,
 and private-key storage remain the responsibility of the xip/ACME system;
 `lazy` never calls its API.
+
+To share xip services over a trusted LAN or tailnet, use the same specific
+reachable address for `--listen` and `--xip-ip`, and allow the listener port
+only for intended peers in the firewall or tailnet ACL. Do not publish the
+listener directly to the internet.
 
 The `--xip-domain` and `--xip-ip` options are required together. They cannot be
 combined with `--suffix` or the older `--route-host` path-routing mode. Service

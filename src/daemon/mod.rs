@@ -2,6 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use std::{
     collections::HashMap,
     fs::File,
+    future::Future,
     io::BufReader as StdBufReader,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
@@ -135,6 +136,11 @@ enum ServiceState {
     Failed,
 }
 
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_REQUEST_HEADER_BYTES: usize = 64 * 1024;
+
 pub async fn run(config: Config) -> Result<()> {
     let socket_path = state::socket_path()?;
     if socket_path.exists() {
@@ -151,6 +157,7 @@ pub async fn run(config: Config) -> Result<()> {
 
     let control_listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("could not bind {}", socket_path.display()))?;
+    state::secure_control_socket(&socket_path)?;
     let proxy_listener = TcpListener::bind(config.listen).await?;
     let tls_acceptor = config.tls.map(load_tls_acceptor).transpose()?.map(Arc::new);
 
@@ -169,6 +176,12 @@ pub async fn run(config: Config) -> Result<()> {
         println!("path routing host: {route_host}");
     }
     println!("control socket: {}", socket_path.display());
+    if !config.listen.ip().is_loopback() {
+        eprintln!(
+            "WARNING: network clients are not authenticated; restrict {} with a firewall or tailnet ACL",
+            config.listen
+        );
+    }
 
     let control_registry = registry.clone();
     tokio::spawn(async move {
@@ -193,12 +206,19 @@ pub async fn run(config: Config) -> Result<()> {
         let tls_acceptor = tls_acceptor.clone();
         tokio::spawn(async move {
             match tls_acceptor {
-                Some(acceptor) => match acceptor.accept(stream).await {
-                    Ok(stream) => {
+                Some(acceptor) => match run_with_timeout(
+                    TLS_HANDSHAKE_TIMEOUT,
+                    "TLS handshake",
+                    acceptor.accept(stream),
+                )
+                .await
+                {
+                    Ok(Ok(stream)) => {
                         if let Err(err) = handle_proxy(stream, registry).await {
                             eprintln!("proxy error: {err:#}");
                         }
                     }
+                    Ok(Err(err)) => eprintln!("tls error: {err:#}"),
                     Err(err) => eprintln!("tls error: {err:#}"),
                 },
                 None => {
@@ -209,6 +229,16 @@ pub async fn run(config: Config) -> Result<()> {
             }
         });
     }
+}
+
+async fn run_with_timeout<T>(
+    duration: Duration,
+    operation: &str,
+    future: impl Future<Output = T>,
+) -> Result<T> {
+    timeout(duration, future)
+        .await
+        .map_err(|_| anyhow!("{operation} timed out after {duration:?}"))
 }
 
 fn load_tls_acceptor(config: TlsConfig) -> Result<TlsAcceptor> {
@@ -323,18 +353,9 @@ async fn handle_proxy<S>(mut inbound: S, registry: Registry) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut buffer = Vec::with_capacity(8192);
-    let mut chunk = [0; 1024];
-    loop {
-        let n = inbound.read(&mut chunk).await?;
-        if n == 0 {
-            return Ok(());
-        }
-        buffer.extend_from_slice(&chunk[..n]);
-        if buffer.windows(4).any(|w| w == b"\r\n\r\n") || buffer.len() > 64 * 1024 {
-            break;
-        }
-    }
+    let Some(mut buffer) = read_request_headers(&mut inbound, REQUEST_HEADER_TIMEOUT).await? else {
+        return Ok(());
+    };
 
     let host = parse_host(&buffer).ok_or_else(|| anyhow!("request missing Host header"))?;
     let route = registry
@@ -345,10 +366,54 @@ where
     registry.start(&route.name).await?;
     let port = registry.upstream_port(&route.name).await?;
 
-    let mut upstream = TcpStream::connect(("127.0.0.1", port)).await?;
+    let mut upstream = run_with_timeout(
+        UPSTREAM_CONNECT_TIMEOUT,
+        "upstream connection",
+        TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await??;
     upstream.write_all(&buffer).await?;
     let _ = tokio::io::copy_bidirectional(&mut inbound, &mut upstream).await;
     Ok(())
+}
+
+async fn read_request_headers<S>(inbound: &mut S, deadline: Duration) -> Result<Option<Vec<u8>>>
+where
+    S: AsyncRead + Unpin,
+{
+    run_with_timeout(deadline, "HTTP request headers", async {
+        let mut buffer = Vec::with_capacity(8192);
+        let mut chunk = [0; 1024];
+        loop {
+            let n = inbound.read(&mut chunk).await?;
+            if n == 0 {
+                return if buffer.is_empty() {
+                    Ok(None)
+                } else {
+                    Err(anyhow!("connection closed before HTTP headers completed"))
+                };
+            }
+            buffer.extend_from_slice(&chunk[..n]);
+            if let Some(header_end) = buffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|position| position + 4)
+            {
+                if header_end > MAX_REQUEST_HEADER_BYTES {
+                    return Err(anyhow!(
+                        "HTTP request headers exceed {MAX_REQUEST_HEADER_BYTES} bytes"
+                    ));
+                }
+                return Ok(Some(buffer));
+            }
+            if buffer.len() >= MAX_REQUEST_HEADER_BYTES {
+                return Err(anyhow!(
+                    "HTTP request headers exceed {MAX_REQUEST_HEADER_BYTES} bytes"
+                ));
+            }
+        }
+    })
+    .await?
 }
 
 fn parse_host(buffer: &[u8]) -> Option<String> {
@@ -771,6 +836,72 @@ mod tests {
             route_host: None,
             tls_enabled,
             services: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_a_complete_request_header() {
+        let request = b"GET / HTTP/1.1\r\nHost: vite.localhost\r\n\r\n";
+        let mut input = &request[..];
+
+        let headers = read_request_headers(&mut input, Duration::from_secs(1))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(headers, request);
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_request_headers() {
+        let mut request = vec![b'a'; MAX_REQUEST_HEADER_BYTES + 1];
+        request.extend_from_slice(b"\r\n\r\n");
+        let mut input = request.as_slice();
+
+        let error = read_request_headers(&mut input, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("exceed"));
+    }
+
+    #[tokio::test]
+    async fn header_limit_does_not_count_buffered_request_body() {
+        let mut request = b"POST / HTTP/1.1\r\nHost: vite.localhost\r\n\r\n".to_vec();
+        request.extend(std::iter::repeat_n(b'a', MAX_REQUEST_HEADER_BYTES + 1));
+        let mut input = request.as_slice();
+
+        let buffered = read_request_headers(&mut input, Duration::from_secs(1))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(buffered.starts_with(b"POST / HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn times_out_stalled_request_headers() {
+        let (mut inbound, _client) = tokio::io::duplex(64);
+
+        let error = read_request_headers(&mut inbound, Duration::from_millis(10))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("HTTP request headers timed out"));
+    }
+
+    #[tokio::test]
+    async fn operation_deadlines_cover_tls_and_upstream_setup() {
+        for operation in ["TLS handshake", "upstream connection"] {
+            let error = run_with_timeout(
+                Duration::from_millis(10),
+                operation,
+                std::future::pending::<()>(),
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains(operation));
+            assert!(error.to_string().contains("timed out"));
         }
     }
 
