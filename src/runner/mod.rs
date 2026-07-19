@@ -1,14 +1,15 @@
 use anyhow::{Context, Result, anyhow};
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, CommandBuilder, ExitStatus, PtySize, native_pty_system};
 use std::{
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     thread,
 };
 use tokio::{
     io::BufReader,
     net::UnixStream,
+    task::JoinHandle,
     time::{Duration, Instant, sleep},
 };
 
@@ -37,10 +38,13 @@ pub struct WorkerConfig {
 }
 
 struct RunningProcess {
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    wait: JoinHandle<std::io::Result<ExitStatus>>,
 }
 
-type ProcessSlot = Arc<Mutex<Option<RunningProcess>>>;
+type ReadinessCheck = JoinHandle<Result<()>>;
+
+const WORKER_STARTUP_GRACE: Duration = Duration::from_millis(100);
 
 pub async fn run_http(config: HttpConfig) -> Result<()> {
     let cwd = config
@@ -167,87 +171,179 @@ async fn run_control_loop(
         .ok_or_else(|| anyhow!("control stream missing"))?;
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
-    let process: ProcessSlot = Arc::new(Mutex::new(None));
+    let mut process = None;
+    let mut readiness = None;
 
-    while let Some(message) = ipc::read_json::<DaemonMessage>(&mut reader).await? {
-        match message {
-            DaemonMessage::Start { port } => {
-                if process.lock().unwrap().is_some() {
-                    ipc::send_json(&mut write, &RunnerMessage::Ready { name: name.clone() })
-                        .await?;
-                    continue;
-                }
+    let result = control_loop(
+        &name,
+        &argv,
+        cwd,
+        http.as_ref(),
+        &mut reader,
+        &mut write,
+        &mut process,
+        &mut readiness,
+    )
+    .await;
 
-                println!("lazy: starting {}", name);
-                let prepared = match prepare_start_command(&argv, http.as_ref(), port) {
-                    Ok(prepared) => prepared,
-                    Err(err) => {
-                        ipc::send_json(
-                            &mut write,
-                            &RunnerMessage::Failed {
-                                name: name.clone(),
-                                error: err.to_string(),
-                            },
-                        )
-                        .await?;
+    if let Some(check) = readiness.take() {
+        check.abort();
+    }
+    stop_process(&mut process).await;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn control_loop(
+    name: &str,
+    argv: &[String],
+    cwd: Option<PathBuf>,
+    http: Option<&HttpCommand>,
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    write: &mut tokio::net::unix::OwnedWriteHalf,
+    process: &mut Option<RunningProcess>,
+    readiness: &mut Option<ReadinessCheck>,
+) -> Result<()> {
+    loop {
+        enum Event {
+            Control(Result<Option<DaemonMessage>>),
+            Exited(Result<std::io::Result<ExitStatus>, tokio::task::JoinError>),
+            Readiness(Result<Result<()>, tokio::task::JoinError>),
+        }
+
+        let event = tokio::select! {
+            message = ipc::read_json::<DaemonMessage>(reader) => Event::Control(message),
+            result = async { (&mut process.as_mut().unwrap().wait).await }, if process.is_some() => {
+                Event::Exited(result)
+            }
+            result = async { readiness.as_mut().unwrap().await }, if readiness.is_some() => {
+                Event::Readiness(result)
+            }
+        };
+
+        match event {
+            Event::Control(Ok(Some(message))) => match message {
+                DaemonMessage::Start { port } => {
+                    if process.is_some() {
+                        if readiness.is_none() {
+                            ipc::send_json(
+                                write,
+                                &RunnerMessage::Ready {
+                                    name: name.to_string(),
+                                },
+                            )
+                            .await?;
+                        }
                         continue;
                     }
-                };
-                match spawn_pty(prepared.argv, prepared.env, cwd.clone(), process.clone()) {
-                    Ok(()) => {
-                        if let Some(port) = port {
-                            match ports::wait_for_port(port, Duration::from_secs(300)).await {
-                                Ok(()) => {
-                                    ipc::send_json(
-                                        &mut write,
-                                        &RunnerMessage::Ready { name: name.clone() },
-                                    )
-                                    .await?;
-                                }
-                                Err(err) => {
-                                    stop_process(&process);
-                                    ipc::send_json(
-                                        &mut write,
-                                        &RunnerMessage::Failed {
-                                            name: name.clone(),
-                                            error: err.to_string(),
-                                        },
-                                    )
-                                    .await?;
-                                }
-                            }
-                        } else {
+
+                    println!("lazy: starting {}", name);
+                    let prepared = match prepare_start_command(argv, http, port) {
+                        Ok(prepared) => prepared,
+                        Err(err) => {
                             ipc::send_json(
-                                &mut write,
-                                &RunnerMessage::Ready { name: name.clone() },
+                                write,
+                                &RunnerMessage::Failed {
+                                    name: name.to_string(),
+                                    error: err.to_string(),
+                                },
+                            )
+                            .await?;
+                            continue;
+                        }
+                    };
+                    match spawn_pty(prepared.argv, prepared.env, cwd.clone()) {
+                        Ok(running) => {
+                            *process = Some(running);
+                            *readiness = Some(tokio::spawn(async move {
+                                match port {
+                                    Some(port) => {
+                                        ports::wait_for_port(port, Duration::from_secs(300)).await
+                                    }
+                                    None => {
+                                        sleep(WORKER_STARTUP_GRACE).await;
+                                        Ok(())
+                                    }
+                                }
+                            }));
+                        }
+                        Err(err) => {
+                            ipc::send_json(
+                                write,
+                                &RunnerMessage::Failed {
+                                    name: name.to_string(),
+                                    error: err.to_string(),
+                                },
                             )
                             .await?;
                         }
                     }
-                    Err(err) => {
+                }
+                DaemonMessage::Stop => {
+                    println!("lazy: stopping {}", name);
+                    if let Some(check) = readiness.take() {
+                        check.abort();
+                    }
+                    stop_process(process).await;
+                    ipc::send_json(
+                        write,
+                        &RunnerMessage::Stopped {
+                            name: name.to_string(),
+                        },
+                    )
+                    .await?;
+                    println!("lazy: waiting for activation");
+                }
+                DaemonMessage::Registered { .. } => {}
+                DaemonMessage::Error { message } => eprintln!("lazy: daemon error: {message}"),
+            },
+            Event::Control(Ok(None)) => return Ok(()),
+            Event::Control(Err(error)) => return Err(error),
+            Event::Exited(result) => {
+                let _ = process.take();
+                if let Some(check) = readiness.take() {
+                    check.abort();
+                }
+                let error = describe_exit(result);
+                eprintln!("lazy: {name} {error}");
+                ipc::send_json(
+                    write,
+                    &RunnerMessage::Failed {
+                        name: name.to_string(),
+                        error,
+                    },
+                )
+                .await?;
+                println!("lazy: waiting for activation");
+            }
+            Event::Readiness(result) => {
+                let _ = readiness.take();
+                match result {
+                    Ok(Ok(())) => {
                         ipc::send_json(
-                            &mut write,
-                            &RunnerMessage::Failed {
-                                name: name.clone(),
-                                error: err.to_string(),
+                            write,
+                            &RunnerMessage::Ready {
+                                name: name.to_string(),
                             },
                         )
                         .await?;
                     }
+                    Ok(Err(error)) => {
+                        stop_process(process).await;
+                        ipc::send_json(
+                            write,
+                            &RunnerMessage::Failed {
+                                name: name.to_string(),
+                                error: error.to_string(),
+                            },
+                        )
+                        .await?;
+                    }
+                    Err(error) => return Err(error.into()),
                 }
             }
-            DaemonMessage::Stop => {
-                println!("lazy: stopping {}", name);
-                stop_process(&process);
-                ipc::send_json(&mut write, &RunnerMessage::Stopped { name: name.clone() }).await?;
-                println!("lazy: waiting for activation");
-            }
-            DaemonMessage::Registered { .. } => {}
-            DaemonMessage::Error { message } => eprintln!("lazy: daemon error: {message}"),
         }
     }
-
-    Ok(())
 }
 
 struct HttpCommand {
@@ -280,8 +376,7 @@ fn spawn_pty(
     argv: Vec<String>,
     env: Vec<(String, String)>,
     cwd: Option<PathBuf>,
-    slot: ProcessSlot,
-) -> Result<()> {
+) -> Result<RunningProcess> {
     if argv.is_empty() {
         return Err(anyhow!("empty command"));
     }
@@ -305,7 +400,8 @@ fn spawn_pty(
         command.cwd(cwd);
     }
 
-    let child = pair.slave.spawn_command(command)?;
+    let mut child = pair.slave.spawn_command(command)?;
+    let killer = child.clone_killer();
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader()?;
@@ -339,13 +435,25 @@ fn spawn_pty(
         }
     });
 
-    *slot.lock().unwrap() = Some(RunningProcess { child });
-    Ok(())
+    let wait = tokio::task::spawn_blocking(move || child.wait());
+    Ok(RunningProcess { killer, wait })
 }
 
-fn stop_process(slot: &ProcessSlot) {
-    if let Some(mut process) = slot.lock().unwrap().take() {
-        let _ = process.child.kill();
+async fn stop_process(slot: &mut Option<RunningProcess>) {
+    if let Some(mut process) = slot.take() {
+        let _ = process.killer.kill();
+        let _ = process.wait.await;
+    }
+}
+
+fn describe_exit(result: Result<std::io::Result<ExitStatus>, tokio::task::JoinError>) -> String {
+    match result {
+        Ok(Ok(status)) => match status.signal() {
+            Some(signal) => format!("process exited due to signal {signal}"),
+            None => format!("process exited with code {}", status.exit_code()),
+        },
+        Ok(Err(error)) => format!("could not wait for process: {error}"),
+        Err(error) => format!("process monitor failed: {error}"),
     }
 }
 

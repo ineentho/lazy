@@ -122,6 +122,7 @@ struct Service {
     register: Register,
     active_port: Option<u16>,
     state: ServiceState,
+    last_error: Option<String>,
     control: mpsc::Sender<DaemonMessage>,
     waiters: Vec<oneshot::Sender<Result<(), String>>>,
 }
@@ -410,6 +411,7 @@ impl Registry {
                 register,
                 active_port: None,
                 state: ServiceState::Dormant,
+                last_error: None,
                 control,
                 waiters: Vec::new(),
             },
@@ -433,21 +435,29 @@ impl Registry {
     }
 
     async fn apply_runner_message(&self, message: RunnerMessage) {
-        let (name, state, result, release_port) = match message {
-            RunnerMessage::Ready { name } => (name, ServiceState::Ready, Ok(()), false),
+        let (name, state, result, release_port, last_error) = match message {
+            RunnerMessage::Ready { name } => (name, ServiceState::Ready, Ok(()), false, None),
             RunnerMessage::Stopped { name } => (
                 name,
                 ServiceState::Dormant,
                 Err("stopped".to_string()),
                 true,
+                None,
             ),
-            RunnerMessage::Failed { name, error } => (name, ServiceState::Failed, Err(error), true),
+            RunnerMessage::Failed { name, error } => (
+                name,
+                ServiceState::Failed,
+                Err(error.clone()),
+                true,
+                Some(error),
+            ),
             RunnerMessage::Register(_) => return,
         };
 
         let mut services = self.services.lock().await;
         if let Some(service) = services.get_mut(&name) {
             service.state = state;
+            service.last_error = last_error;
             if release_port {
                 service.active_port = None;
             }
@@ -555,7 +565,7 @@ impl Registry {
             return "no services registered\n".to_string();
         }
 
-        let mut rows = vec!["NAME\tKIND\tSTATE\tURL\tUPSTREAM".to_string()];
+        let mut rows = vec!["NAME\tKIND\tSTATE\tURL\tUPSTREAM\tDETAIL".to_string()];
         for (name, service) in services.iter() {
             let kind = match service.register.kind {
                 ProcessKind::Http => "http",
@@ -577,7 +587,14 @@ impl Registry {
                 .active_port
                 .map(|p| format!("127.0.0.1:{p}"))
                 .unwrap_or_else(|| "-".to_string());
-            rows.push(format!("{name}\t{kind}\t{state}\t{url}\t{upstream}"));
+            let detail = service
+                .last_error
+                .as_deref()
+                .map(sanitize_status_detail)
+                .unwrap_or_else(|| "-".to_string());
+            rows.push(format!(
+                "{name}\t{kind}\t{state}\t{url}\t{upstream}\t{detail}"
+            ));
         }
         rows.push(String::new());
         rows.join("\n")
@@ -604,6 +621,10 @@ impl Registry {
             Ok(format!("{scheme}://{hostname}:{port}"))
         }
     }
+}
+
+fn sanitize_status_detail(detail: &str) -> String {
+    detail.replace(['\t', '\r', '\n'], " ")
 }
 
 fn allocate_port(services: &HashMap<String, Service>, request: PortRequest) -> Result<u16> {
