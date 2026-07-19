@@ -1,4 +1,5 @@
 [workspace]
-# lazy is distributed through GitHub Releases rather than crates.io.
+# Git-only mode creates tags and GitHub Releases without publishing to crates.io.
 git_only = true
+publish = false
 release_always = false
