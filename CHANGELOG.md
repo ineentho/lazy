@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/ineentho/lazy/compare/v0.1.3...v0.1.4) - 2026-07-19
+
+### Other
+
+- *(deps)* bump actions/checkout from 6 to 7 ([#14](https://github.com/ineentho/lazy/pull/14))
+- refresh docs, security config, and example dependencies
+
 ### Changed
 
 - Document the supported platforms, command lifecycle, worker usage, minimum
