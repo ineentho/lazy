@@ -802,7 +802,6 @@ mod tests {
                     name: name.to_string(),
                     kind: ProcessKind::Http,
                     port_request: Some(request),
-                    active_while: Vec::new(),
                 },
                 control.clone(),
             )
