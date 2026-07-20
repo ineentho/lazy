@@ -9,7 +9,6 @@ repository = "https://github.com/ineentho/lazy"
 readme = "README.md"
 keywords = ["development", "process-manager", "proxy"]
 categories = ["command-line-utilities", "development-tools"]
-publish = false
 
 [dependencies]
 anyhow = "1.0.98"

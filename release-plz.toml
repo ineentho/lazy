@@ -1,5 +1,7 @@
 [workspace]
 # Git-only mode creates tags and GitHub Releases without publishing to crates.io.
 git_only = true
+# Keep publishing disabled here rather than with `package.publish = false` in
+# Cargo.toml. The latter makes `release-plz release` filter out the package.
 publish = false
 release_always = false

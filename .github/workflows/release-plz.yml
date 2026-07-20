@@ -35,6 +35,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify current version is tagged
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          tag="v${version}"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null; then
+            echo "release-plz did not create ${tag}" >&2
+            exit 1
+          fi
+
       # Tags created with GITHUB_TOKEN do not start other workflows. Dispatch
       # the existing binary workflow explicitly so no PAT is required.
       - name: Build release binaries
