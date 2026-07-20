@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Run HTTP services and workers in their runner's starting directory by
+  default, and support `--cwd` for workers as well as HTTP services.
+
 ## [0.1.4](https://github.com/ineentho/lazy/compare/v0.1.3...v0.1.4) - 2026-07-19
 
 ### Other

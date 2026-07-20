@@ -34,6 +34,7 @@ pub struct WorkerConfig {
     pub name: String,
     pub command: Vec<String>,
     pub daemon_timeout: Option<Duration>,
+    pub cwd: Option<PathBuf>,
 }
 
 struct RunningProcess {
@@ -46,12 +47,7 @@ type ReadinessCheck = JoinHandle<Result<()>>;
 const WORKER_STARTUP_GRACE: Duration = Duration::from_millis(100);
 
 pub async fn run_http(config: HttpConfig) -> Result<()> {
-    let cwd = config
-        .cwd
-        .as_ref()
-        .map(std::fs::canonicalize)
-        .transpose()
-        .context("could not resolve --cwd")?;
+    let cwd = resolve_cwd(config.cwd.as_ref())?;
     let port_request = match config.upstream_port {
         Some(port) => PortRequest::Fixed { port },
         None => PortRequest::Range {
@@ -86,6 +82,7 @@ pub async fn run_http(config: HttpConfig) -> Result<()> {
 }
 
 pub async fn run_worker(config: WorkerConfig) -> Result<()> {
+    let cwd = resolve_cwd(config.cwd.as_ref())?;
     register_loop(
         Register {
             name: config.name.clone(),
@@ -98,7 +95,14 @@ pub async fn run_worker(config: WorkerConfig) -> Result<()> {
 
     println!("lazy: {} worker registered", config.name);
     println!("lazy: waiting for activation");
-    run_control_loop(config.name, config.command, None, None).await
+    run_control_loop(config.name, config.command, cwd, None).await
+}
+
+fn resolve_cwd(cwd: Option<&PathBuf>) -> Result<PathBuf> {
+    match cwd {
+        Some(cwd) => std::fs::canonicalize(cwd).context("could not resolve --cwd"),
+        None => std::env::current_dir().context("could not resolve current working directory"),
+    }
 }
 
 async fn register_loop(
@@ -159,7 +163,7 @@ static CONTROL_STREAM: std::sync::OnceLock<Mutex<Option<UnixStream>>> = std::syn
 async fn run_control_loop(
     name: String,
     argv: Vec<String>,
-    cwd: Option<PathBuf>,
+    cwd: PathBuf,
     http: Option<HttpCommand>,
 ) -> Result<()> {
     let stream = CONTROL_STREAM
@@ -194,7 +198,7 @@ async fn run_control_loop(
 async fn control_loop(
     name: &str,
     argv: &[String],
-    cwd: Option<PathBuf>,
+    cwd: PathBuf,
     http: Option<&HttpCommand>,
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     write: &mut tokio::net::unix::OwnedWriteHalf,
@@ -372,7 +376,7 @@ fn prepare_start_command(
 fn spawn_pty(
     argv: Vec<String>,
     env: Vec<(String, String)>,
-    cwd: Option<PathBuf>,
+    cwd: PathBuf,
 ) -> Result<RunningProcess> {
     if argv.is_empty() {
         return Err(anyhow!("empty command"));
@@ -393,9 +397,7 @@ fn spawn_pty(
     for (key, value) in env {
         command.env(key, value);
     }
-    if let Some(cwd) = cwd {
-        command.cwd(cwd);
-    }
+    command.cwd(cwd);
 
     let mut child = pair.slave.spawn_command(command)?;
     let killer = child.clone_killer();
@@ -488,6 +490,11 @@ mod tests {
                 .env
                 .contains(&("PORT".to_string(), "4321".to_string()))
         );
+    }
+
+    #[test]
+    fn omitted_cwd_uses_runner_working_directory() {
+        assert_eq!(resolve_cwd(None).unwrap(), std::env::current_dir().unwrap());
     }
 
     #[tokio::test]

@@ -119,6 +119,10 @@ struct WorkerArgs {
     )]
     daemon_timeout: Option<u64>,
 
+    /// Working directory in which to run the command.
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+
     /// Command to start when the worker is activated.
     #[arg(last = true, required = true)]
     command: Vec<String>,
@@ -173,6 +177,7 @@ pub async fn run() -> Result<()> {
                 name: args.name,
                 command: args.command,
                 daemon_timeout: args.daemon_timeout.map(Duration::from_secs),
+                cwd: args.cwd,
             })
             .await
         }
@@ -296,6 +301,27 @@ mod tests {
             panic!("expected worker command");
         };
         assert_eq!(worker.daemon_timeout, None);
+    }
+
+    #[test]
+    fn cwd_is_available_for_http_and_worker() {
+        let http = Cli::try_parse_from([
+            "lazy", "http", "web", "--cwd", "frontend", "--", "echo", "web",
+        ])
+        .unwrap();
+        let Command::Http(http) = http.command else {
+            panic!("expected http command");
+        };
+        assert_eq!(http.cwd, Some(PathBuf::from("frontend")));
+
+        let worker = Cli::try_parse_from([
+            "lazy", "worker", "jobs", "--cwd", "backend", "--", "echo", "jobs",
+        ])
+        .unwrap();
+        let Command::Worker(worker) = worker.command else {
+            panic!("expected worker command");
+        };
+        assert_eq!(worker.cwd, Some(PathBuf::from("backend")));
     }
 
     #[test]

@@ -238,6 +238,55 @@ fn worker_exit_is_reported_instead_of_ready() {
     assert!(status.contains("jobs\tworker\tfailed"), "{status}");
 }
 
+#[test]
+fn worker_uses_runner_cwd_by_default_and_accepts_override() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("worker-cwd");
+    let launch_dir = home.0.join("launch");
+    let override_dir = home.0.join("override");
+    std::fs::create_dir_all(&launch_dir).unwrap();
+    std::fs::create_dir_all(&override_dir).unwrap();
+    let _proxy = spawn_proxy(&home.0);
+
+    for (name, cwd, expected) in [
+        ("default-cwd", None, &launch_dir),
+        ("override-cwd", Some(&override_dir), &override_dir),
+    ] {
+        let cwd_file = home.0.join(name);
+        let mut command = lazy(&home.0);
+        command.args(["worker", name]).current_dir(&launch_dir);
+        if let Some(cwd) = cwd {
+            command.args(["--cwd", cwd.to_str().unwrap()]);
+        }
+        let child = command
+            .args([
+                "--",
+                current_test_exe().to_str().unwrap(),
+                "--exact",
+                "helper_write_cwd",
+                "--nocapture",
+            ])
+            .env("LAZY_TEST_HELPER", "1")
+            .env("LAZY_TEST_CWD_FILE", &cwd_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        wait_for_registration(&home.0, name);
+        let _runner = ChildGuard(child);
+
+        let _ = start(&home.0, name);
+        wait_until(Duration::from_secs(2), || cwd_file.exists());
+        assert_eq!(
+            PathBuf::from(std::fs::read_to_string(&cwd_file).unwrap()),
+            std::fs::canonicalize(expected).unwrap()
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn control_stream_loss_kills_and_reaps_active_child() {
@@ -331,4 +380,17 @@ fn helper_run_forever() {
     loop {
         thread::sleep(Duration::from_secs(60));
     }
+}
+
+#[test]
+fn helper_write_cwd() {
+    if !helper_enabled() {
+        return;
+    }
+    let cwd = std::env::current_dir().unwrap();
+    std::fs::write(
+        std::env::var_os("LAZY_TEST_CWD_FILE").unwrap(),
+        cwd.to_string_lossy().as_bytes(),
+    )
+    .unwrap();
 }

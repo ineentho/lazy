@@ -49,10 +49,14 @@ React Native, and Expo commands and supplies their port and host flags. Use
 Workers have no URL and start only when explicitly requested:
 
 ```sh
-lazy worker jobs -- ./run-jobs
+lazy worker jobs --cwd ./backend -- ./run-jobs
 lazy start jobs
 lazy stop jobs
 ```
+
+Both HTTP services and workers run in the directory where their runner was
+started by default. Use `--cwd PATH` to override it; relative paths are resolved
+from the runner's starting directory.
 
 When a process manager starts runners alongside the proxy, let each runner
 wait briefly for the daemon instead of adding shell polling:
