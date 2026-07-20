@@ -328,6 +328,53 @@ fn control_stream_loss_kills_and_reaps_active_child() {
     wait_until(Duration::from_secs(5), || !process_exists(pid.trim()));
 }
 
+#[cfg(unix)]
+#[test]
+fn sigterm_removes_the_control_socket() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("sigterm");
+    let mut proxy = spawn_proxy(&home.0);
+    let socket = home.0.join(".lazy/lazy.sock");
+    let pid_file = home.0.join("child-pid");
+    let child = lazy(&home.0)
+        .args([
+            "worker",
+            "sigterm-child",
+            "--",
+            current_test_exe().to_str().unwrap(),
+            "--exact",
+            "helper_run_forever",
+            "--nocapture",
+        ])
+        .env("LAZY_TEST_HELPER", "1")
+        .env("LAZY_TEST_PID_FILE", &pid_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for_registration(&home.0, "sigterm-child");
+    let mut runner = ChildGuard(child);
+    let response = String::from_utf8_lossy(&start(&home.0, "sigterm-child").stdout).into_owned();
+    assert!(response.contains("sigterm-child: ready"), "{response}");
+    wait_until(Duration::from_secs(2), || pid_file.exists());
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+
+    let status = Command::new("kill")
+        .args(["-TERM", &proxy.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(proxy.0.wait().unwrap().success());
+    assert!(!socket.exists());
+    wait_until(Duration::from_secs(5), || {
+        runner.0.try_wait().unwrap().is_some()
+    });
+    wait_until(Duration::from_secs(5), || !process_exists(pid.trim()));
+}
+
 fn count_starts(path: &Path) -> usize {
     std::fs::read_to_string(path)
         .map(|contents| contents.lines().count())

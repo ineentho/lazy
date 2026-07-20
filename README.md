@@ -88,6 +88,13 @@ common development frameworks automatically.
 
 Run `lazy help` or `lazy help <command>` for all commands and options.
 
+## Running on ports 80 and 443
+
+Lazy supports launchd socket activation on macOS and systemd socket activation
+on Linux. The service manager binds the privileged port while Lazy, its control
+socket, and all registered runners stay under the developer account. See
+[DAEMONS.md](DAEMONS.md) for complete setup instructions.
+
 ## Xip-style service URLs
 
 For URLs reachable through an xip-style DNS zone, start the proxy with the

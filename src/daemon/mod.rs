@@ -1,12 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-use std::{
-    collections::HashMap,
-    future::Future,
-    net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, future::Future, net::Ipv4Addr, path::PathBuf, sync::Arc};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream, UnixListener, UnixStream},
@@ -20,13 +14,14 @@ use crate::{
         self, ClientRequest, DaemonMessage, PortRequest, ProcessKind, Register, RunnerMessage,
         SocketMessage,
     },
-    state,
+    listener, state,
 };
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub host_routing: HostRouting,
-    pub listen: SocketAddr,
+    pub listener: listener::Source,
+    pub public_port: Option<u16>,
     pub route_host: Option<String>,
     pub tls: Option<TlsConfig>,
 }
@@ -106,7 +101,7 @@ pub struct TlsConfig {
 #[derive(Clone)]
 struct Registry {
     host_routing: HostRouting,
-    listen: SocketAddr,
+    public_port: u16,
     route_host: Option<String>,
     tls_enabled: bool,
     services: Arc<Mutex<HashMap<String, Service>>>,
@@ -136,23 +131,26 @@ const MAX_REQUEST_HEADER_BYTES: usize = 64 * 1024;
 
 pub async fn run(config: Config) -> Result<()> {
     let socket_path = state::socket_path()?;
-    if socket_path.exists() {
-        std::fs::remove_file(&socket_path)?;
-    }
+    state::remove_stale_control_socket(&socket_path)?;
+
+    let std_proxy_listener = listener::acquire(&config.listener)?;
+    let listen_address = std_proxy_listener.local_addr()?;
+    let public_port = config.public_port.unwrap_or(listen_address.port());
+    let proxy_listener = TcpListener::from_std(std_proxy_listener)?;
+    let tls_acceptor = config.tls.map(load_tls_acceptor).transpose()?.map(Arc::new);
 
     let registry = Registry {
         host_routing: config.host_routing.clone(),
-        listen: config.listen,
+        public_port,
         route_host: config.route_host.clone(),
-        tls_enabled: config.tls.is_some(),
+        tls_enabled: tls_acceptor.is_some(),
         services: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let control_listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("could not bind {}", socket_path.display()))?;
+    let _control_socket_guard = state::ControlSocketGuard::new(socket_path.clone())?;
     state::secure_control_socket(&socket_path)?;
-    let proxy_listener = TcpListener::bind(config.listen).await?;
-    let tls_acceptor = config.tls.map(load_tls_acceptor).transpose()?.map(Arc::new);
 
     let scheme = if tls_acceptor.is_some() {
         "https"
@@ -162,39 +160,49 @@ pub async fn run(config: Config) -> Result<()> {
     println!(
         "lazy proxy listening on {}://{} with {}",
         scheme,
-        config.listen,
+        listen_address,
         config.host_routing.description()
     );
+    if public_port != listen_address.port() {
+        println!("public service port: {public_port}");
+    }
     if let Some(route_host) = &config.route_host {
         println!("path routing host: {route_host}");
     }
     println!("control socket: {}", socket_path.display());
-    if !config.listen.ip().is_loopback() {
+    if !listen_address.ip().is_loopback() {
         eprintln!(
             "WARNING: network clients are not authenticated; restrict {} with a firewall or tailnet ACL",
-            config.listen
+            listen_address
         );
     }
 
-    let control_registry = registry.clone();
-    tokio::spawn(async move {
-        loop {
-            match control_listener.accept().await {
-                Ok((stream, _)) => {
-                    let registry = control_registry.clone();
-                    tokio::spawn(async move {
-                        if let Err(err) = handle_control(stream, registry).await {
-                            eprintln!("control error: {err:#}");
-                        }
-                    });
-                }
-                Err(err) => eprintln!("control accept error: {err}"),
-            }
-        }
-    });
+    tokio::select! {
+        result = serve_control(&control_listener, registry.clone()) => result,
+        result = serve_proxy(&proxy_listener, registry, tls_acceptor) => result,
+        result = shutdown_signal() => result,
+    }
+}
 
+async fn serve_control(listener: &UnixListener, registry: Registry) -> Result<()> {
     loop {
-        let (stream, _) = proxy_listener.accept().await?;
+        let (stream, _) = listener.accept().await?;
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            if let Err(err) = handle_control(stream, registry).await {
+                eprintln!("control error: {err:#}");
+            }
+        });
+    }
+}
+
+async fn serve_proxy(
+    listener: &TcpListener,
+    registry: Registry,
+    tls_acceptor: Option<Arc<TlsAcceptor>>,
+) -> Result<()> {
+    loop {
+        let (stream, _) = listener.accept().await?;
         let registry = registry.clone();
         let tls_acceptor = tls_acceptor.clone();
         tokio::spawn(async move {
@@ -218,6 +226,15 @@ pub async fn run(config: Config) -> Result<()> {
             }
         });
     }
+}
+
+async fn shutdown_signal() -> Result<()> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result?,
+        _ = terminate.recv() => {},
+    }
+    Ok(())
 }
 
 async fn run_with_timeout<T>(
@@ -650,7 +667,7 @@ impl Registry {
 
     fn url_for_service(&self, name: &str) -> Result<String> {
         if let Some(route_host) = &self.route_host {
-            let port = self.listen.port();
+            let port = self.public_port;
             let scheme = if self.tls_enabled { "https" } else { "http" };
             let default_port = if self.tls_enabled { 443 } else { 80 };
             if port == default_port {
@@ -660,7 +677,7 @@ impl Registry {
         }
 
         let hostname = self.host_routing.hostname_for_service(name)?;
-        let port = self.listen.port();
+        let port = self.public_port;
         let scheme = if self.tls_enabled { "https" } else { "http" };
         let default_port = if self.tls_enabled { 443 } else { 80 };
         if port == default_port {
@@ -815,7 +832,7 @@ mod tests {
     fn registry(host_routing: HostRouting, port: u16, tls_enabled: bool) -> Registry {
         Registry {
             host_routing,
-            listen: SocketAddr::from(([127, 0, 0, 1], port)),
+            public_port: port,
             route_host: None,
             tls_enabled,
             services: Arc::new(Mutex::new(HashMap::new())),
