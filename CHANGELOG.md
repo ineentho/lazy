@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/ineentho/lazy/compare/v0.1.5...v0.1.6) - 2026-07-20
+
+### Fixed
+
+- *(release)* verify tags before building release binaries
+
+### Other
+
+- *(readme)* streamline installation and basic usage ([#22](https://github.com/ineentho/lazy/pull/22))
+
 ## [0.1.5](https://github.com/ineentho/lazy/compare/v0.1.4...v0.1.5) - 2026-07-20
 
 ### Added
