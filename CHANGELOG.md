@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/ineentho/lazy/compare/v0.1.4...v0.1.5) - 2026-07-20
+
+### Added
+
+- detect frameworks in package-manager scripts ([#18](https://github.com/ineentho/lazy/pull/18))
+
+### Fixed
+
+- suppress proxy errors and idle runner message ([#19](https://github.com/ineentho/lazy/pull/19))
+- preserve runner working directory for spawned commands
+
 ### Added
 
 - Detect supported frameworks in simple package-manager scripts so commands
