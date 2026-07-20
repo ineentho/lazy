@@ -18,6 +18,7 @@ dirs = "6.0.0"
 portable-pty = "0.9.0"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
+shell-words = "1.1.1"
 rustls-pki-types = { version = "1.9.0", features = ["std"] }
 tokio = { version = "1.46.1", features = [
   "io-util",

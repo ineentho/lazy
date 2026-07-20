@@ -30,7 +30,13 @@ pub fn prepare_framework_args(
         return;
     };
 
-    if !has_flag(argv, "--port") {
+    let inject_port = !has_flag(argv, "--port");
+    let inject_host = !has_flag(argv, "--host") && host.is_some();
+    if (inject_port || inject_host) && needs_argument_separator(argv) {
+        argv.push("--".to_string());
+    }
+
+    if inject_port {
         argv.push("--port".to_string());
         argv.push(port.to_string());
         if framework.strict_port && !has_flag(argv, "--strictPort") {
@@ -38,9 +44,7 @@ pub fn prepare_framework_args(
         }
     }
 
-    if !has_flag(argv, "--host")
-        && let Some(host) = host
-    {
+    if inject_host && let Some(host) = host {
         let host = if framework.name == "expo" {
             "localhost"
         } else {
@@ -49,6 +53,26 @@ pub fn prepare_framework_args(
         argv.push("--host".to_string());
         argv.push(host.to_string());
     }
+}
+
+pub fn find_package_script_framework(argv: &[String], cwd: &Path) -> Option<FrameworkHint> {
+    let script_name = package_script_name(argv)?;
+    let package_json = std::fs::read_to_string(cwd.join("package.json")).ok()?;
+    let package: serde_json::Value = serde_json::from_str(&package_json).ok()?;
+    let script = package.get("scripts")?.get(script_name)?.as_str()?;
+
+    // Shell composition changes where injected arguments land, so only resolve a
+    // script whose first command is also its only command.
+    if script
+        .chars()
+        .any(|c| matches!(c, '&' | '|' | ';' | '<' | '>' | '`' | '#' | '\n' | '\r'))
+        || script.contains("$(")
+    {
+        return None;
+    }
+
+    let words = shell_words::split(script).ok()?;
+    words.first().and_then(|word| framework(&basename(word)))
 }
 
 fn find_framework(argv: &[String]) -> Option<FrameworkHint> {
@@ -79,6 +103,28 @@ fn find_framework(argv: &[String]) -> Option<FrameworkHint> {
         i += 1;
     }
     argv.get(i).and_then(|arg| framework(&basename(arg)))
+}
+
+fn package_script_name(argv: &[String]) -> Option<&str> {
+    let runner = argv.first().map(|arg| basename(arg))?;
+    let subcommand = argv.get(1)?.as_str();
+    let is_run = match runner.as_str() {
+        "npm" => matches!(subcommand, "run" | "run-script"),
+        "pnpm" | "yarn" | "bun" => subcommand == "run",
+        _ => false,
+    };
+
+    if is_run {
+        argv.get(2).map(String::as_str)
+    } else {
+        None
+    }
+}
+
+fn needs_argument_separator(argv: &[String]) -> bool {
+    argv.first().map(|arg| basename(arg)).as_deref() == Some("npm")
+        && matches!(argv.get(1).map(String::as_str), Some("run" | "run-script"))
+        && !argv.iter().skip(3).any(|arg| arg == "--")
 }
 
 fn framework(name: &str) -> Option<FrameworkHint> {
@@ -168,6 +214,33 @@ mod tests {
         assert!(argv.contains(&"--port".to_string()));
         assert!(argv.contains(&"4300".to_string()));
         assert!(argv.contains(&"--strictPort".to_string()));
+    }
+
+    #[test]
+    fn npm_script_arguments_use_forwarding_separator() {
+        let mut argv = vec!["npm".to_string(), "run".to_string(), "dev".to_string()];
+
+        prepare_framework_args(
+            &mut argv,
+            4350,
+            Some("127.0.0.1"),
+            FrameworkHint::from_name("vite"),
+        );
+
+        assert_eq!(
+            argv,
+            vec![
+                "npm",
+                "run",
+                "dev",
+                "--",
+                "--port",
+                "4350",
+                "--strictPort",
+                "--host",
+                "127.0.0.1"
+            ]
+        );
     }
 
     #[test]

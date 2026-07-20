@@ -8,7 +8,7 @@ windows:
       - shell_command:
           - cargo run -- http expo --daemon-timeout 10 --cwd examples/apps/expo -- pnpm exec expo start
       - shell_command:
-          - cargo run -- http vite --daemon-timeout 10 --cwd examples/apps/vite -- pnpm exec vite dev
+          - cargo run -- http vite --daemon-timeout 10 --cwd examples/apps/vite -- pnpm run dev
       - shell_command:
           - cargo run -- http webpack --daemon-timeout 10 --cwd examples/apps/webpack -- pnpm exec webpack serve --config webpack.config.js
       - shell_command:

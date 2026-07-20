@@ -43,8 +43,14 @@ the runner stops its active child when it disconnects from the proxy.
 HTTP commands receive `PORT`, `HOST`, and `LAZY_URL` environment variables.
 `lazy` also detects Vite, Vite+, React Router, Rsbuild, Astro, Angular,
 React Native, and Expo commands and supplies their port and host flags. Use
-`--framework NAME` when a package script hides the framework executable, or
+`--framework NAME` when the framework cannot be detected automatically, or
 `--upstream-port PORT` for a server that must use a fixed port.
+
+For simple `npm`, `pnpm`, `yarn`, and `bun` `run` commands, `lazy` reads the
+selected script from `package.json` and detects the framework executable. The
+script must contain a single direct command; composed scripts such as
+`vite && other-command` and wrappers such as `sh -c 'vite'` require an explicit
+`--framework NAME` hint.
 
 Workers have no URL and start only when explicitly requested:
 

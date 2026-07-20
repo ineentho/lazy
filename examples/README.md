@@ -59,8 +59,8 @@ the proxy pane.
   starting without tmux-specific polling loops.
 - Upstream ports are allocated by the daemon when each app is activated and
   released when it stops.
-- Vite and Expo are launched directly through `pnpm exec` so `lazy` can inject
-  port flags automatically.
+- The Vite package script is resolved automatically; Expo is launched directly
+  through `pnpm exec`.
 - The JavaScript apps rely on pnpm's automatic install-on-run behavior.
 - Webpack, Fastify, Spring, and Axum read `PORT` from the environment.
 - Spring also maps `PORT` to `SERVER_PORT` in `application.properties`.
