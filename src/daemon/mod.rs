@@ -207,17 +207,13 @@ pub async fn run(config: Config) -> Result<()> {
                 .await
                 {
                     Ok(Ok(stream)) => {
-                        if let Err(err) = handle_proxy(stream, registry).await {
-                            eprintln!("proxy error: {err:#}");
-                        }
+                        let _ = handle_proxy(stream, registry).await;
                     }
                     Ok(Err(err)) => eprintln!("tls error: {err:#}"),
                     Err(err) => eprintln!("tls error: {err:#}"),
                 },
                 None => {
-                    if let Err(err) = handle_proxy(stream, registry).await {
-                        eprintln!("proxy error: {err:#}");
-                    }
+                    let _ = handle_proxy(stream, registry).await;
                 }
             }
         });

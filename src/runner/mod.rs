@@ -67,7 +67,6 @@ pub async fn run_http(config: HttpConfig) -> Result<()> {
 
     let public_url = url.unwrap_or_else(|| format!("http://{}", config.name));
     println!("lazy: {} registered at {}", config.name, public_url);
-    println!("lazy: waiting for traffic");
 
     run_control_loop(
         config.name,
