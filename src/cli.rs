@@ -2,13 +2,17 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use std::{net::Ipv4Addr, path::PathBuf, time::Duration};
 
-use crate::{daemon, ipc, runner};
+use crate::{daemon, ipc, runner, state};
 
 #[derive(Parser)]
 #[command(name = "lazy")]
 #[command(about = "On-demand dev process activation")]
 #[command(version)]
 struct Cli {
+    /// Directory containing Lazy's control socket and state.
+    #[arg(long, global = true, env = "LAZY_STATE_DIR")]
+    state_dir: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -52,8 +56,16 @@ struct ProxyArgs {
     xip_ip: Option<Ipv4Addr>,
 
     /// Address on which the proxy accepts HTTP or HTTPS connections.
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    listen: String,
+    #[arg(long, conflicts_with = "activated_socket")]
+    listen: Option<String>,
+
+    /// Name of a listener supplied by launchd or systemd.
+    #[arg(long, value_name = "NAME", conflicts_with = "listen")]
+    activated_socket: Option<String>,
+
+    /// Port included in generated service URLs (defaults to the listener port).
+    #[arg(long)]
+    public_port: Option<u16>,
 
     /// Single host used by the legacy path-prefix routing mode.
     #[arg(long)]
@@ -146,11 +158,24 @@ fn host_routing(args: &ProxyArgs) -> Result<daemon::HostRouting> {
 }
 
 pub async fn run() -> Result<()> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    if let Some(path) = cli.state_dir {
+        state::set_state_dir(path)?;
+    }
+
+    match cli.command {
         Command::Proxy(args) => {
+            let host_routing = host_routing(&args)?;
+            let listener = match args.activated_socket {
+                Some(name) => crate::listener::Source::Activated(name),
+                None => crate::listener::Source::Bind(
+                    args.listen.as_deref().unwrap_or("127.0.0.1:8080").parse()?,
+                ),
+            };
             daemon::run(daemon::Config {
-                host_routing: host_routing(&args)?,
-                listen: args.listen.parse()?,
+                host_routing,
+                listener,
+                public_port: args.public_port,
                 route_host: args.route_host,
                 tls: match (args.cert, args.key) {
                     (Some(cert), Some(key)) => Some(daemon::TlsConfig { cert, key }),
@@ -224,14 +249,38 @@ mod tests {
             routing,
             daemon::HostRouting::Suffix(".localhost".to_string())
         );
-        assert_eq!(args.listen, "127.0.0.1:8080");
+        assert_eq!(args.listen, None);
+        assert_eq!(args.activated_socket, None);
     }
 
     #[test]
     fn proxy_parses_non_loopback_listener() {
         let args = proxy_args(&["--listen", "100.64.0.10:8443"]);
 
-        assert_eq!(args.listen, "100.64.0.10:8443");
+        assert_eq!(args.listen.as_deref(), Some("100.64.0.10:8443"));
+    }
+
+    #[test]
+    fn proxy_parses_activated_socket_and_public_port() {
+        let args = proxy_args(&["--activated-socket", "HTTPS", "--public-port", "443"]);
+
+        assert_eq!(args.activated_socket.as_deref(), Some("HTTPS"));
+        assert_eq!(args.public_port, Some(443));
+    }
+
+    #[test]
+    fn proxy_listener_sources_conflict() {
+        assert!(
+            Cli::try_parse_from([
+                "lazy",
+                "proxy",
+                "--listen",
+                "127.0.0.1:443",
+                "--activated-socket",
+                "HTTPS",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

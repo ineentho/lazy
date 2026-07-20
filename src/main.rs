@@ -2,6 +2,7 @@ mod cli;
 mod command;
 mod daemon;
 mod ipc;
+mod listener;
 mod runner;
 mod state;
 
