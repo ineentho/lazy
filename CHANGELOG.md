@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Detect supported frameworks in simple package-manager scripts so commands
+  such as `pnpm run dev` receive the allocated port and host arguments.
+
 ### Fixed
 
 - Run HTTP services and workers in their runner's starting directory by

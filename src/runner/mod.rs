@@ -239,7 +239,7 @@ async fn control_loop(
                     }
 
                     println!("lazy: starting {}", name);
-                    let prepared = match prepare_start_command(argv, http, port) {
+                    let prepared = match prepare_start_command(argv, http, port, &cwd) {
                         Ok(prepared) => prepared,
                         Err(err) => {
                             ipc::send_json(
@@ -356,6 +356,7 @@ fn prepare_start_command(
     argv: &[String],
     http: Option<&HttpCommand>,
     port: Option<u16>,
+    cwd: &std::path::Path,
 ) -> Result<command::PreparedCommand> {
     match (http, port) {
         (Some(http), Some(port)) => Ok(command::prepare_http_command(
@@ -363,6 +364,7 @@ fn prepare_start_command(
             port,
             &http.public_url,
             http.framework.as_deref(),
+            cwd,
         )),
         (None, None) => Ok(command::PreparedCommand {
             argv: argv.to_vec(),
@@ -477,7 +479,9 @@ mod tests {
             framework: None,
         };
 
-        let prepared = prepare_start_command(&argv, Some(&http), Some(4321)).unwrap();
+        let prepared =
+            prepare_start_command(&argv, Some(&http), Some(4321), PathBuf::from(".").as_path())
+                .unwrap();
 
         assert!(
             prepared
