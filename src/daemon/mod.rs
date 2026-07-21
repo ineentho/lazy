@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+use serde::Serialize;
 use std::{collections::HashMap, future::Future, net::Ipv4Addr, path::PathBuf, sync::Arc};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
@@ -90,6 +91,27 @@ impl HostRouting {
             }
         }
     }
+
+    fn status_hostname(&self) -> Result<String> {
+        match self {
+            Self::Suffix(suffix) => {
+                let hostname = suffix.trim_start_matches('.');
+                if hostname.is_empty() {
+                    return Err(anyhow!("suffix has no bare hostname"));
+                }
+                Ok(hostname.to_ascii_lowercase())
+            }
+            Self::Xip(config) => {
+                let encoded_ip = config.ip.to_string().replace('.', "-");
+                Ok(format!("{encoded_ip}.{}", config.domain))
+            }
+        }
+    }
+
+    fn is_status_host(&self, host: &str) -> bool {
+        self.status_hostname()
+            .is_ok_and(|status_host| host.eq_ignore_ascii_case(&status_host))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +119,87 @@ pub struct TlsConfig {
     pub cert: PathBuf,
     pub key: PathBuf,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct StatusRow {
+    name: String,
+    kind: String,
+    state: String,
+    url: String,
+    upstream: String,
+    detail: String,
+}
+
+const STATUS_HTML_SHELL: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>lazy status</title>
+<style>
+body{font-family:ui-monospace,monospace;margin:2rem}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:.5em;border-bottom:1px solid #ddd}
+th{background:#f5f5f5}
+td:last-child{font-style:italic;color:#666}
+.error{color:#c00}
+.loading{color:#666}
+</style>
+</head>
+<body>
+<h1>lazy services</h1>
+<div id="root"><p class="loading">loading&hellip;</p></div>
+<script>
+(async()=>{
+  const r = () => {
+    fetch("/api/status").then(async r => {
+      if (!r.ok) throw new Error(r.statusText);
+      const d = await r.json();
+      const el = document.getElementById("root");
+      if (d.length === 0) {
+        const p = document.createElement("p");
+        p.textContent = "no services registered";
+        el.replaceChildren(p);
+        return;
+      }
+      const t = document.createElement("table");
+      const h = document.createElement("tr");
+      ["NAME","KIND","STATE","URL","UPSTREAM","DETAIL"].forEach(c => {
+        const th = document.createElement("th");
+        th.textContent = c;
+        h.appendChild(th);
+      });
+      t.appendChild(h);
+      d.forEach(s => {
+        const row = document.createElement("tr");
+        ["name","kind","state","url","upstream","detail"].forEach((k,i) => {
+          const td = document.createElement("td");
+          if (k === "url" && s.url !== "-") {
+            const a = document.createElement("a");
+            a.setAttribute("href", s.url);
+            a.textContent = s.url;
+            td.appendChild(a);
+          } else {
+            td.textContent = s[k];
+          }
+          row.appendChild(td);
+        });
+        t.appendChild(row);
+      });
+      el.replaceChildren(t);
+    }).catch(e => {
+      const el = document.getElementById("root");
+      const p = document.createElement("p");
+      p.className = "error";
+      p.textContent = "fetch error: " + e.message;
+      el.replaceChildren(p);
+    }).finally(() => setTimeout(r, 2000));
+  };
+  r();
+})();
+</script>
+</body>
+</html>"#;
 
 #[derive(Clone)]
 struct Registry {
@@ -358,10 +461,19 @@ where
     };
 
     let host = parse_host(&buffer).ok_or_else(|| anyhow!("request missing Host header"))?;
-    let route = registry
-        .route_for_request(&host, &mut buffer)
-        .await
-        .ok_or_else(|| anyhow!("host {host:?} does not match a lazy route"))?;
+    let route = registry.route_for_request(&host, &mut buffer).await;
+    let route = match route {
+        Some(route) => route,
+        None => {
+            if registry
+                .try_serve_status(&host, &buffer, &mut inbound)
+                .await?
+            {
+                return Ok(());
+            }
+            return Err(anyhow!("host {host:?} does not match a lazy route"));
+        }
+    };
 
     registry.start(&route.name).await?;
     let port = registry.upstream_port(&route.name).await?;
@@ -624,13 +736,9 @@ impl Registry {
         self.services.lock().await.contains_key(name)
     }
 
-    async fn status(&self) -> String {
+    async fn collect_rows(&self) -> Vec<StatusRow> {
         let services = self.services.lock().await;
-        if services.is_empty() {
-            return "no services registered\n".to_string();
-        }
-
-        let mut rows = vec!["NAME\tKIND\tSTATE\tURL\tUPSTREAM\tDETAIL".to_string()];
+        let mut rows = Vec::with_capacity(services.len());
         for (name, service) in services.iter() {
             let kind = match service.register.kind {
                 ProcessKind::Http => "http",
@@ -657,12 +765,37 @@ impl Registry {
                 .as_deref()
                 .map(sanitize_status_detail)
                 .unwrap_or_else(|| "-".to_string());
-            rows.push(format!(
-                "{name}\t{kind}\t{state}\t{url}\t{upstream}\t{detail}"
+            rows.push(StatusRow {
+                name: name.clone(),
+                kind: kind.to_string(),
+                state: state.to_string(),
+                url,
+                upstream,
+                detail,
+            });
+        }
+        rows
+    }
+
+    async fn status(&self) -> String {
+        let rows = self.collect_rows().await;
+        if rows.is_empty() {
+            return "no services registered\n".to_string();
+        }
+        let mut lines = vec!["NAME\tKIND\tSTATE\tURL\tUPSTREAM\tDETAIL".to_string()];
+        for row in &rows {
+            lines.push(format!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                row.name, row.kind, row.state, row.url, row.upstream, row.detail
             ));
         }
-        rows.push(String::new());
-        rows.join("\n")
+        lines.push(String::new());
+        lines.join("\n")
+    }
+
+    async fn status_json(&self) -> String {
+        let rows = self.collect_rows().await;
+        serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string())
     }
 
     fn url_for_service(&self, name: &str) -> Result<String> {
@@ -684,6 +817,36 @@ impl Registry {
             Ok(format!("{scheme}://{hostname}"))
         } else {
             Ok(format!("{scheme}://{hostname}:{port}"))
+        }
+    }
+
+    async fn try_serve_status<S: AsyncWrite + Unpin>(
+        &self,
+        host: &str,
+        buffer: &[u8],
+        stream: &mut S,
+    ) -> Result<bool> {
+        if !self.host_routing.is_status_host(host) {
+            return Ok(false);
+        }
+        match request_method_path(buffer) {
+            Some(("GET", "/api/status")) => {
+                let body = self.status_json().await;
+                write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+                    .await?;
+                Ok(true)
+            }
+            Some(("GET", "/")) => {
+                write_http_response(
+                    stream,
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    STATUS_HTML_SHELL,
+                )
+                .await?;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 }
@@ -821,6 +984,31 @@ fn parse_header<'a>(buffer: &'a [u8], header: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+async fn write_http_response<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    status: &str,
+    content_type: &str,
+    body: &str,
+) -> Result<()> {
+    let response = format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        content_type,
+        body.len(),
+        body
+    );
+    stream.write_all(response.as_bytes()).await?;
+    Ok(())
+}
+
+fn request_method_path(buffer: &[u8]) -> Option<(&str, &str)> {
+    let request = std::str::from_utf8(buffer).ok()?;
+    let line_end = request.find("\r\n").or_else(|| request.find('\n'))?;
+    let first_line = &request[..line_end];
+    let mut parts = first_line.split_whitespace();
+    Some((parts.next()?, parts.next()?))
 }
 
 #[cfg(test)]
@@ -1145,5 +1333,309 @@ mod tests {
             parse_host(request).as_deref(),
             Some("vite-192-0-2-10.xip.example.com")
         );
+    }
+
+    // --- status page tests ---
+
+    #[test]
+    fn status_hostname_for_suffix() {
+        let routing = HostRouting::Suffix(".localhost".to_string());
+        assert_eq!(routing.status_hostname().unwrap(), "localhost");
+    }
+
+    #[test]
+    fn status_hostname_for_suffix_without_dot() {
+        let routing = HostRouting::Suffix("local".to_string());
+        assert_eq!(routing.status_hostname().unwrap(), "local");
+    }
+
+    #[test]
+    fn status_hostname_for_xip() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(127, 0, 0, 1)).unwrap();
+        assert_eq!(
+            routing.status_hostname().unwrap(),
+            "127-0-0-1.xip.example.com"
+        );
+    }
+
+    #[test]
+    fn is_status_host_matches_for_xip_bare_domain() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(127, 0, 0, 1)).unwrap();
+        assert!(routing.is_status_host("127-0-0-1.xip.example.com"));
+        assert!(routing.is_status_host("127-0-0-1.XIP.EXAMPLE.COM"));
+    }
+
+    #[test]
+    fn is_status_host_does_not_match_service_hostname() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(127, 0, 0, 1)).unwrap();
+        assert!(!routing.is_status_host("vite-127-0-0-1.xip.example.com"));
+    }
+
+    #[test]
+    fn is_status_host_matches_bare_suffix() {
+        let routing = HostRouting::Suffix(".localhost".to_string());
+        assert!(routing.is_status_host("localhost"));
+        assert!(routing.is_status_host("LOCALHOST"));
+    }
+
+    #[test]
+    fn request_method_path_returns_method_and_path() {
+        assert_eq!(
+            request_method_path(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            Some(("GET", "/"))
+        );
+        assert_eq!(
+            request_method_path(b"GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            Some(("GET", "/api/status"))
+        );
+        assert_eq!(
+            request_method_path(b"POST / HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            Some(("POST", "/"))
+        );
+        assert_eq!(
+            request_method_path(b"GET /vite HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            Some(("GET", "/vite"))
+        );
+        assert_eq!(request_method_path(b"not-http"), None);
+    }
+
+    #[tokio::test]
+    async fn status_is_empty_when_no_services() {
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        assert_eq!(registry.status().await, "no services registered\n");
+    }
+
+    #[tokio::test]
+    async fn status_json_is_empty_array_when_no_services() {
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        assert_eq!(registry.status_json().await, "[]");
+    }
+
+    #[tokio::test]
+    async fn collect_rows_and_status_agree() {
+        let _guard = PORT_TEST_LOCK.lock().await;
+        let (port, _) = free_port_range(1);
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (control, messages) =
+            register_http(&registry, "vite", PortRequest::Fixed { port }).await;
+
+        let rows = registry.collect_rows().await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "vite");
+        assert_eq!(rows[0].kind, "http");
+        assert_eq!(rows[0].state, "dormant");
+        assert_eq!(rows[0].url, "http://vite.localhost:8080");
+        assert_eq!(rows[0].upstream, "-");
+        assert_eq!(rows[0].detail, "-");
+
+        let text = registry.status().await;
+        let expected = "NAME\tKIND\tSTATE\tURL\tUPSTREAM\tDETAIL\nvite\thttp\tdormant\thttp://vite.localhost:8080\t-\t-\n";
+        assert_eq!(text, expected);
+
+        drop(messages);
+        drop(control);
+    }
+
+    #[tokio::test]
+    async fn collect_rows_shows_ready_state_and_upstream() {
+        let _guard = PORT_TEST_LOCK.lock().await;
+        let (port, _) = free_port_range(1);
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (control, messages) =
+            register_http(&registry, "web", PortRequest::Fixed { port }).await;
+
+        let ready = tokio::spawn(mark_ready(registry.clone(), "web", messages));
+        registry.start("web").await.unwrap();
+        let _port = ready.await.unwrap();
+
+        let rows = registry.collect_rows().await;
+        assert_eq!(rows[0].state, "ready");
+        assert_eq!(rows[0].upstream, format!("127.0.0.1:{port}"));
+
+        drop(control);
+    }
+
+    #[tokio::test]
+    async fn status_json_contains_service_data() {
+        let _guard = PORT_TEST_LOCK.lock().await;
+        let (port, _) = free_port_range(1);
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (control, messages) =
+            register_http(&registry, "vite", PortRequest::Fixed { port }).await;
+
+        let json = registry.status_json().await;
+        assert!(json.contains("\"name\":\"vite\""));
+        assert!(json.contains("\"kind\":\"http\""));
+        assert!(json.contains("\"state\":\"dormant\""));
+        assert!(json.contains("\"url\":\"http://vite.localhost:8080\""));
+
+        drop(messages);
+        drop(control);
+    }
+
+    #[tokio::test]
+    async fn try_serve_status_serves_html_on_bare_suffix_root() {
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (mut client, mut server) = tokio::io::duplex(4096);
+
+        let served = registry
+            .try_serve_status(
+                "localhost",
+                b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                &mut client,
+            )
+            .await
+            .unwrap();
+        assert!(served);
+
+        let mut buf = [0u8; 4096];
+        let n = server.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(response.contains("HTTP/1.1 200 OK"));
+        assert!(
+            !response.contains("&quot;"),
+            "shell must not contain HTML entities in script: {response}"
+        );
+        assert!(
+            response.contains("fetch(\"/api/status\")"),
+            "shell must use normal JS quotes: {response}"
+        );
+        assert!(
+            response.contains("setTimeout(r, 2000)"),
+            "shell must reschedule with 2000ms: {response}"
+        );
+        assert!(
+            !response.contains("http-equiv=\"refresh\""),
+            "shell must not have meta refresh: {response}"
+        );
+        assert!(
+            !response.contains("innerHTML"),
+            "shell must not use innerHTML: {response}"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_serve_status_serves_json_on_bare_suffix_api() {
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (mut client, mut server) = tokio::io::duplex(4096);
+
+        let served = registry
+            .try_serve_status(
+                "localhost",
+                b"GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                &mut client,
+            )
+            .await
+            .unwrap();
+        assert!(served);
+
+        let mut buf = [0u8; 4096];
+        let n = server.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(response.contains("HTTP/1.1 200 OK"));
+        assert!(response.contains("application/json"));
+    }
+
+    #[tokio::test]
+    async fn try_serve_status_serves_html_on_bare_xip_root() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(127, 0, 0, 1)).unwrap();
+        let registry = registry(routing, 443, true);
+        let (mut client, mut server) = tokio::io::duplex(4096);
+
+        let served = registry
+            .try_serve_status(
+                "127-0-0-1.xip.example.com",
+                b"GET / HTTP/1.1\r\nHost: 127-0-0-1.xip.example.com\r\n\r\n",
+                &mut client,
+            )
+            .await
+            .unwrap();
+        assert!(served);
+
+        let mut buf = [0u8; 4096];
+        let n = server.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(response.contains("HTTP/1.1 200 OK"));
+    }
+
+    #[tokio::test]
+    async fn try_serve_status_serves_json_on_bare_xip_api() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(127, 0, 0, 1)).unwrap();
+        let registry = registry(routing, 443, true);
+        let (mut client, mut server) = tokio::io::duplex(4096);
+
+        let served = registry
+            .try_serve_status(
+                "127-0-0-1.xip.example.com",
+                b"GET /api/status HTTP/1.1\r\nHost: 127-0-0-1.xip.example.com\r\n\r\n",
+                &mut client,
+            )
+            .await
+            .unwrap();
+        assert!(served);
+
+        let mut buf = [0u8; 4096];
+        let n = server.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(response.contains("HTTP/1.1 200 OK"));
+        assert!(response.contains("application/json"));
+    }
+
+    #[tokio::test]
+    async fn try_serve_status_rejects_post_method() {
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (mut client, _server) = tokio::io::duplex(4096);
+
+        let served = registry
+            .try_serve_status(
+                "localhost",
+                b"POST / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                &mut client,
+            )
+            .await
+            .unwrap();
+        assert!(!served, "POST / must not be served as status");
+
+        let served = registry
+            .try_serve_status(
+                "localhost",
+                b"POST /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                &mut client,
+            )
+            .await
+            .unwrap();
+        assert!(!served, "POST /api/status must not be served as status");
+    }
+
+    #[tokio::test]
+    async fn try_serve_status_rejects_unrelated_path_on_status_host() {
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (mut client, _server) = tokio::io::duplex(4096);
+
+        let served = registry
+            .try_serve_status(
+                "localhost",
+                b"GET /some-other-path HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                &mut client,
+            )
+            .await
+            .unwrap();
+        assert!(!served);
+    }
+
+    #[tokio::test]
+    async fn try_serve_status_does_not_match_service_host() {
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (mut client, _server) = tokio::io::duplex(4096);
+
+        let served = registry
+            .try_serve_status(
+                "vite.localhost",
+                b"GET / HTTP/1.1\r\nHost: vite.localhost\r\n\r\n",
+                &mut client,
+            )
+            .await
+            .unwrap();
+        assert!(!served);
     }
 }
