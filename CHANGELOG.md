@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/ineentho/lazy/compare/v0.1.8...v0.1.9) - 2026-07-21
+
+### Added
+
+- *(routing)* support prefixes before xip service names ([#29](https://github.com/ineentho/lazy/pull/29))
+
 ### Added
 
 - Support variable prefixes before registered service names in xip hostnames.
