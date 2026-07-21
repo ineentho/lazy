@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/ineentho/lazy/compare/v0.1.7...v0.1.8) - 2026-07-21
+
+### Added
+
+- *(proxy)* serve live status page on bare routing host ([#26](https://github.com/ineentho/lazy/pull/26))
+
+### Other
+
+- Add stop controls to status page
+- Support IPv6 loopback upstreams
+
 ## [0.1.7](https://github.com/ineentho/lazy/compare/v0.1.6...v0.1.7) - 2026-07-20
 
 ### Added
