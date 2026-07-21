@@ -37,13 +37,13 @@ pub enum HostRouting {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XipRouting {
     domain: String,
-    ip: Ipv4Addr,
+    url_ip: Ipv4Addr,
 }
 
 impl HostRouting {
-    pub fn xip(domain: &str, ip: Ipv4Addr) -> Result<Self> {
+    pub fn xip(domain: &str, url_ip: Ipv4Addr) -> Result<Self> {
         let domain = normalize_domain(domain)?;
-        Ok(Self::Xip(XipRouting { domain, ip }))
+        Ok(Self::Xip(XipRouting { domain, url_ip }))
     }
 
     fn hostname_for_service(&self, name: &str) -> Result<String> {
@@ -56,7 +56,7 @@ impl HostRouting {
             }
             Self::Xip(config) => {
                 validate_dns_label(name, "service name")?;
-                let encoded_ip = config.ip.to_string().replace('.', "-");
+                let encoded_ip = config.url_ip.to_string().replace('.', "-");
                 let first_label = format!("{name}-{encoded_ip}");
                 if first_label.len() > 63 {
                     return Err(anyhow!(
@@ -75,11 +75,7 @@ impl HostRouting {
     fn service_name_from_host(&self, host: &str) -> Option<String> {
         match self {
             Self::Suffix(suffix) => strip_suffix_ascii_case(host, suffix),
-            Self::Xip(config) => {
-                let encoded_ip = config.ip.to_string().replace('.', "-");
-                let suffix = format!("-{encoded_ip}.{}", config.domain);
-                strip_suffix_ascii_case(host, &suffix).map(|name| name.to_ascii_lowercase())
-            }
+            Self::Xip(config) => xip_service_name_from_host(host, &config.domain),
         }
         .filter(|name| !name.is_empty())
     }
@@ -88,7 +84,10 @@ impl HostRouting {
         match self {
             Self::Suffix(suffix) => format!("suffix {suffix:?}"),
             Self::Xip(config) => {
-                format!("xip domain {:?} with address {}", config.domain, config.ip)
+                format!(
+                    "xip domain {:?} generating URLs with address {}",
+                    config.domain, config.url_ip
+                )
             }
         }
     }
@@ -103,15 +102,21 @@ impl HostRouting {
                 Ok(hostname.to_ascii_lowercase())
             }
             Self::Xip(config) => {
-                let encoded_ip = config.ip.to_string().replace('.', "-");
+                let encoded_ip = config.url_ip.to_string().replace('.', "-");
                 Ok(format!("{encoded_ip}.{}", config.domain))
             }
         }
     }
 
     fn is_status_host(&self, host: &str) -> bool {
-        self.status_hostname()
-            .is_ok_and(|status_host| host.eq_ignore_ascii_case(&status_host))
+        match self {
+            Self::Suffix(_) => self
+                .status_hostname()
+                .is_ok_and(|status_host| host.eq_ignore_ascii_case(&status_host)),
+            Self::Xip(config) => {
+                xip_service_name_from_host(host, &config.domain).is_some_and(|name| name.is_empty())
+            }
+        }
     }
 }
 
@@ -1060,6 +1065,24 @@ fn strip_suffix_ascii_case(value: &str, suffix: &str) -> Option<String> {
         .then(|| value[..split].to_string())
 }
 
+fn xip_service_name_from_host(host: &str, domain: &str) -> Option<String> {
+    let label = strip_suffix_ascii_case(host, &format!(".{domain}"))?;
+    if label.contains('.') {
+        return None;
+    }
+
+    let mut parts = label.rsplitn(5, '-');
+    for _ in 0..4 {
+        let octet = parts.next()?;
+        if !octet.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        octet.parse::<u8>().ok()?;
+    }
+
+    Some(parts.next().unwrap_or("").to_ascii_lowercase())
+}
+
 fn rewrite_path_route(buffer: &mut Vec<u8>) -> Option<String> {
     let request = std::str::from_utf8(buffer).ok()?;
     let line_end = request.find("\r\n").or_else(|| request.find('\n'))?;
@@ -1408,8 +1431,30 @@ mod tests {
         );
         assert_eq!(
             routing.service_name_from_host("vite-192-0-2-11.xip.example.com"),
+            Some("vite".to_string())
+        );
+        assert_eq!(
+            routing.service_name_from_host("vite-192-0-2-256.xip.example.com"),
             None
         );
+        assert_eq!(
+            routing.service_name_from_host("vite-192-0-2-11.other.example.com"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn xip_routing_accepts_an_ip_other_than_the_generated_url_ip() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(192, 0, 2, 10)).unwrap();
+        let registry = registry(routing, 8080, false);
+        register_http(&registry, "api", PortRequest::Fixed { port: 4000 }).await;
+
+        let route = registry
+            .route_for_request("api-127-0-0-1.xip.example.com", &mut Vec::new())
+            .await
+            .unwrap();
+
+        assert_eq!(route.name, "api");
     }
 
     #[tokio::test]
@@ -1574,7 +1619,9 @@ mod tests {
     fn is_status_host_matches_for_xip_bare_domain() {
         let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(127, 0, 0, 1)).unwrap();
         assert!(routing.is_status_host("127-0-0-1.xip.example.com"));
+        assert!(routing.is_status_host("192-0-2-10.xip.example.com"));
         assert!(routing.is_status_host("127-0-0-1.XIP.EXAMPLE.COM"));
+        assert!(!routing.is_status_host("192-0-2-256.xip.example.com"));
     }
 
     #[test]

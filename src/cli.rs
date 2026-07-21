@@ -40,14 +40,10 @@ struct ProxyArgs {
     suffix: Option<String>,
 
     /// Authoritative xip-style DNS zone, for example xip.example.com.
-    #[arg(
-        long,
-        requires = "xip_ip",
-        conflicts_with_all = ["suffix", "route_host"]
-    )]
+    #[arg(long, conflicts_with_all = ["suffix", "route_host"])]
     xip_domain: Option<String>,
 
-    /// IPv4 address encoded into each xip hostname.
+    /// IPv4 address used to generate xip service URLs (defaults to 127.0.0.1).
     #[arg(
         long,
         requires = "xip_domain",
@@ -147,9 +143,11 @@ struct ServiceArgs {
 }
 
 fn host_routing(args: &ProxyArgs) -> Result<daemon::HostRouting> {
-    match (&args.xip_domain, args.xip_ip) {
-        (Some(domain), Some(ip)) => daemon::HostRouting::xip(domain, ip),
-        _ => Ok(daemon::HostRouting::Suffix(
+    match &args.xip_domain {
+        Some(domain) => {
+            daemon::HostRouting::xip(domain, args.xip_ip.unwrap_or(Ipv4Addr::LOCALHOST))
+        }
+        None => Ok(daemon::HostRouting::Suffix(
             args.suffix
                 .clone()
                 .unwrap_or_else(|| ".localhost".to_string()),
@@ -302,8 +300,12 @@ mod tests {
     }
 
     #[test]
-    fn xip_domain_and_ip_are_required_together() {
-        assert!(Cli::try_parse_from(["lazy", "proxy", "--xip-domain", "xip.example.com"]).is_err());
+    fn xip_ip_defaults_to_loopback_and_requires_a_domain() {
+        let args = proxy_args(&["--xip-domain", "xip.example.com"]);
+        assert_eq!(
+            host_routing(&args).unwrap(),
+            daemon::HostRouting::xip("xip.example.com", Ipv4Addr::LOCALHOST).unwrap()
+        );
         assert!(Cli::try_parse_from(["lazy", "proxy", "--xip-ip", "192.0.2.10"]).is_err());
     }
 

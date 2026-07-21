@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Accept any valid embedded IPv4 address in xip request hostnames while using
+  the optional `--xip-ip` only to generate service URLs, defaulting it to
+  `127.0.0.1`.
+
 ## [0.1.9](https://github.com/ineentho/lazy/compare/v0.1.8...v0.1.9) - 2026-07-21
 
 ### Added

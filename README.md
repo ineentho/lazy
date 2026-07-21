@@ -104,7 +104,6 @@ zone, encoded IPv4 address, and an existing wildcard certificate:
 lazy proxy \
   --listen 127.0.0.1:443 \
   --xip-domain xip.example.com \
-  --xip-ip 127.0.0.1 \
   --cert /path/to/xip.example.com.crt \
   --key /path/to/xip.example.com.key
 ```
@@ -122,7 +121,9 @@ the prefix for tenant, environment, or branch routing.
 
 The DNS zone must resolve the encoded address, and the certificate must cover
 `*.xip.example.com`. Certificate creation and renewal are handled outside
-`lazy`. See the [example stack](examples/README.md) for a multi-service setup.
+`lazy`. `--xip-ip` selects the address used in generated service URLs and
+defaults to `127.0.0.1`; incoming hostnames may contain any valid IPv4 address. See the
+[example stack](examples/README.md) for a multi-service setup.
 
 ## Development
 
