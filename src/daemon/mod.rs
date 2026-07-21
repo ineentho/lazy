@@ -142,61 +142,122 @@ body{font-family:ui-monospace,monospace;margin:2rem}
 table{border-collapse:collapse;width:100%}
 th,td{text-align:left;padding:.5em;border-bottom:1px solid #ddd}
 th{background:#f5f5f5}
-td:last-child{font-style:italic;color:#666}
+.detail{font-style:italic;color:#666}
+.stop-link{appearance:none;border:0;background:none;padding:0;font:inherit;color:#06c;text-decoration:underline;cursor:pointer}
+.stop-link:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+.stop-link:disabled{color:#888;text-decoration:none;cursor:default}
 .error{color:#c00}
 .loading{color:#666}
 </style>
 </head>
 <body>
 <h1>lazy services</h1>
+<p id="action-error" class="error" hidden></p>
 <div id="root"><p class="loading">loading&hellip;</p></div>
 <script>
-(async()=>{
-  const r = () => {
-    fetch("/api/status").then(async r => {
-      if (!r.ok) throw new Error(r.statusText);
-      const d = await r.json();
-      const el = document.getElementById("root");
-      if (d.length === 0) {
-        const p = document.createElement("p");
-        p.textContent = "no services registered";
-        el.replaceChildren(p);
+(function(){
+  const root = document.getElementById("root");
+  const actionError = document.getElementById("action-error");
+  const stopping = new Set();
+
+  const showMessage = (message, className) => {
+    const p = document.createElement("p");
+    if (className) p.className = className;
+    p.textContent = message;
+    root.replaceChildren(p);
+  };
+
+  const showActionError = message => {
+    actionError.textContent = message;
+    actionError.hidden = !message;
+  };
+
+  const refresh = async () => {
+    try {
+      const response = await fetch("/api/status");
+      if (!response.ok) throw new Error(response.statusText);
+      const services = await response.json();
+      if (services.length === 0) {
+        showMessage("no services registered");
         return;
       }
-      const t = document.createElement("table");
-      const h = document.createElement("tr");
-      ["NAME","KIND","STATE","URL","UPSTREAM","DETAIL"].forEach(c => {
+
+      const table = document.createElement("table");
+      const header = document.createElement("tr");
+      ["NAME","KIND","STATE","URL","UPSTREAM","DETAIL","ACTION"].forEach(label => {
         const th = document.createElement("th");
-        th.textContent = c;
-        h.appendChild(th);
+        th.textContent = label;
+        header.appendChild(th);
       });
-      t.appendChild(h);
-      d.forEach(s => {
+      table.appendChild(header);
+
+      services.forEach(service => {
+        if (service.state === "dormant" || service.state === "failed") {
+          stopping.delete(service.name);
+        }
         const row = document.createElement("tr");
-        ["name","kind","state","url","upstream","detail"].forEach((k,i) => {
+        ["name","kind","state","url","upstream","detail"].forEach(field => {
           const td = document.createElement("td");
-          if (k === "url" && s.url !== "-") {
-            const a = document.createElement("a");
-            a.setAttribute("href", s.url);
-            a.textContent = s.url;
-            td.appendChild(a);
+          if (field === "url" && service.url !== "-") {
+            const link = document.createElement("a");
+            link.setAttribute("href", service.url);
+            link.textContent = service.url;
+            td.appendChild(link);
           } else {
-            td.textContent = s[k];
+            td.textContent = service[field];
           }
+          if (field === "detail") td.className = "detail";
           row.appendChild(td);
         });
-        t.appendChild(row);
+
+        const action = document.createElement("td");
+        const button = document.createElement("button");
+        const canStop = service.state === "starting" || service.state === "ready";
+        button.type = "button";
+        button.className = "stop-link";
+        button.disabled = !canStop || stopping.has(service.name);
+        button.textContent = "Stop";
+        if (canStop) {
+          button.addEventListener("click", async () => {
+            stopping.add(service.name);
+            button.disabled = true;
+            showActionError("");
+            try {
+              const response = await fetch("/api/stop", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Lazy-Service": service.name
+                },
+                body: "{}"
+              });
+              if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                throw new Error(body.error || response.statusText);
+              }
+              await refresh();
+            } catch (error) {
+              stopping.delete(service.name);
+              button.disabled = false;
+              showActionError("stop failed: " + error.message);
+            }
+          });
+        }
+        action.appendChild(button);
+        row.appendChild(action);
+        table.appendChild(row);
       });
-      el.replaceChildren(t);
-    }).catch(e => {
-      const el = document.getElementById("root");
-      const p = document.createElement("p");
-      p.className = "error";
-      p.textContent = "fetch error: " + e.message;
-      el.replaceChildren(p);
-    }).finally(() => setTimeout(r, 2000));
+      root.replaceChildren(table);
+    } catch (error) {
+      showMessage("fetch error: " + error.message, "error");
+    }
   };
-  r();
+
+  const poll = async () => {
+    await refresh();
+    setTimeout(poll, 2000);
+  };
+  poll();
 })();
 </script>
 </body>
@@ -835,6 +896,67 @@ impl Registry {
                 let body = self.status_json().await;
                 write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body)
                     .await?;
+                Ok(true)
+            }
+            Some(("POST", "/api/stop")) => {
+                if !parse_header(buffer, "content-type").is_some_and(|value| {
+                    value
+                        .split(';')
+                        .next()
+                        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+                }) {
+                    write_http_response(
+                        stream,
+                        "415 Unsupported Media Type",
+                        "application/json; charset=utf-8",
+                        r#"{"error":"content type must be application/json"}"#,
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+                let Some(name) =
+                    parse_header(buffer, "x-lazy-service").filter(|name| !name.is_empty())
+                else {
+                    write_http_response(
+                        stream,
+                        "400 Bad Request",
+                        "application/json; charset=utf-8",
+                        r#"{"error":"missing X-Lazy-Service header"}"#,
+                    )
+                    .await?;
+                    return Ok(true);
+                };
+                if !self.has_service(name).await {
+                    write_http_response(
+                        stream,
+                        "404 Not Found",
+                        "application/json; charset=utf-8",
+                        r#"{"error":"service not registered"}"#,
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+                match self.stop(name).await {
+                    Ok(()) => {
+                        write_http_response(
+                            stream,
+                            "202 Accepted",
+                            "application/json; charset=utf-8",
+                            r#"{"ok":true}"#,
+                        )
+                        .await?;
+                    }
+                    Err(error) => {
+                        let body = serde_json::json!({ "error": error.to_string() }).to_string();
+                        write_http_response(
+                            stream,
+                            "500 Internal Server Error",
+                            "application/json; charset=utf-8",
+                            &body,
+                        )
+                        .await?;
+                    }
+                }
                 Ok(true)
             }
             Some(("GET", "/")) => {
@@ -1477,7 +1599,7 @@ mod tests {
     #[tokio::test]
     async fn try_serve_status_serves_html_on_bare_suffix_root() {
         let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
-        let (mut client, mut server) = tokio::io::duplex(4096);
+        let (mut client, mut server) = tokio::io::duplex(16 * 1024);
 
         let served = registry
             .try_serve_status(
@@ -1489,7 +1611,7 @@ mod tests {
             .unwrap();
         assert!(served);
 
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 16 * 1024];
         let n = server.read(&mut buf).await.unwrap();
         let response = String::from_utf8_lossy(&buf[..n]);
         assert!(response.contains("HTTP/1.1 200 OK"));
@@ -1502,7 +1624,7 @@ mod tests {
             "shell must use normal JS quotes: {response}"
         );
         assert!(
-            response.contains("setTimeout(r, 2000)"),
+            response.contains("setTimeout(poll, 2000)"),
             "shell must reschedule with 2000ms: {response}"
         );
         assert!(
@@ -1513,6 +1635,13 @@ mod tests {
             !response.contains("innerHTML"),
             "shell must not use innerHTML: {response}"
         );
+        assert!(response.contains("fetch(\"/api/stop\""));
+        assert!(response.contains("\"X-Lazy-Service\": service.name"));
+        assert!(response.contains("document.createElement(\"button\")"));
+        assert!(response.contains("button.className = \"stop-link\""));
+        assert!(response.contains("button.disabled = !canStop || stopping.has(service.name)"));
+        assert!(response.contains("button.textContent = \"Stop\""));
+        assert!(!response.contains("Stopping…"));
     }
 
     #[tokio::test]
@@ -1541,7 +1670,7 @@ mod tests {
     async fn try_serve_status_serves_html_on_bare_xip_root() {
         let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(127, 0, 0, 1)).unwrap();
         let registry = registry(routing, 443, true);
-        let (mut client, mut server) = tokio::io::duplex(4096);
+        let (mut client, mut server) = tokio::io::duplex(16 * 1024);
 
         let served = registry
             .try_serve_status(
@@ -1553,7 +1682,7 @@ mod tests {
             .unwrap();
         assert!(served);
 
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 16 * 1024];
         let n = server.read(&mut buf).await.unwrap();
         let response = String::from_utf8_lossy(&buf[..n]);
         assert!(response.contains("HTTP/1.1 200 OK"));
@@ -1606,6 +1735,71 @@ mod tests {
             .await
             .unwrap();
         assert!(!served, "POST /api/status must not be served as status");
+    }
+
+    #[tokio::test]
+    async fn try_serve_status_dispatches_stop_to_registered_service() {
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        let (control, mut messages) =
+            register_http(&registry, "vite", PortRequest::Fixed { port: 4100 }).await;
+        let (mut client, mut server) = tokio::io::duplex(4096);
+
+        let served = registry
+            .try_serve_status(
+                "localhost",
+                b"POST /api/stop HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nX-Lazy-Service: vite\r\nContent-Length: 2\r\n\r\n{}",
+                &mut client,
+            )
+            .await
+            .unwrap();
+        assert!(served);
+        assert!(matches!(messages.recv().await, Some(DaemonMessage::Stop)));
+
+        let mut buf = [0u8; 4096];
+        let n = server.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(response.contains("HTTP/1.1 202 Accepted"));
+        assert!(response.ends_with(r#"{"ok":true}"#));
+
+        drop(control);
+    }
+
+    #[tokio::test]
+    async fn try_serve_status_validates_stop_requests() {
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+
+        for (request, expected_status) in [
+            (
+                b"POST /api/stop HTTP/1.1\r\nHost: localhost\r\nX-Lazy-Service: vite\r\n\r\n"
+                    .as_slice(),
+                "415 Unsupported Media Type",
+            ),
+            (
+                b"POST /api/stop HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\r\n"
+                    .as_slice(),
+                "400 Bad Request",
+            ),
+            (
+                b"POST /api/stop HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json; charset=utf-8\r\nX-Lazy-Service: missing\r\n\r\n"
+                    .as_slice(),
+                "404 Not Found",
+            ),
+        ] {
+            let (mut client, mut server) = tokio::io::duplex(4096);
+            assert!(
+                registry
+                    .try_serve_status("localhost", request, &mut client)
+                    .await
+                    .unwrap()
+            );
+            let mut buf = [0u8; 4096];
+            let n = server.read(&mut buf).await.unwrap();
+            let response = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                response.contains(expected_status),
+                "expected {expected_status}, got {response}"
+            );
+        }
     }
 
     #[tokio::test]

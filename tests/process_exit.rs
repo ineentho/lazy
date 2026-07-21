@@ -40,7 +40,7 @@ impl Drop for ChildGuard {
 
 fn lazy(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_lazy"));
-    command.env("HOME", home);
+    command.env("HOME", home).env_remove("LAZY_STATE_DIR");
     command
 }
 
@@ -421,6 +421,19 @@ fn http_get(host: &str, port: u16, path: &str) -> String {
     response
 }
 
+fn http_stop(host: &str, port: u16, service: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("could not connect to proxy");
+    write!(
+        stream,
+        "POST /api/stop HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nX-Lazy-Service: {service}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    )
+    .unwrap();
+    stream.flush().unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
 fn parse_http_response(raw: &str) -> (u16, String) {
     let mut lines = raw.lines();
     let status_line = lines.next().unwrap_or("");
@@ -460,6 +473,29 @@ fn suffix_status_api_returns_json() {
     let (code, body) = parse_http_response(&raw);
     assert_eq!(code, 200, "expected 200, got response: {raw}");
     assert!(body.starts_with('['), "expected JSON array, got: {raw}");
+}
+
+#[test]
+fn suffix_status_api_stops_running_service() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("suffix-stop");
+    let (_proxy, proxy_port) = spawn_proxy_on(&home.0, &[]);
+    let _runner = spawn_http(&home.0, "stoppable", "helper_http_forever", free_port());
+
+    let started = String::from_utf8_lossy(&start(&home.0, "stoppable").stdout).into_owned();
+    assert!(started.contains("stoppable: ready"), "{started}");
+    let running = status(&home.0);
+    assert!(running.contains("stoppable\thttp\tready"), "{running}");
+
+    let raw = http_stop("localhost", proxy_port, "stoppable");
+    let (code, body) = parse_http_response(&raw);
+    assert_eq!(code, 202, "expected accepted response, got: {raw}");
+    assert_eq!(body, r#"{"ok":true}"#);
+    wait_until(Duration::from_secs(5), || {
+        status(&home.0).contains("stoppable\thttp\tdormant")
+    });
 }
 
 #[test]
@@ -574,6 +610,18 @@ fn helper_http_then_exit() {
     let port: u16 = std::env::var("PORT").unwrap().parse().unwrap();
     let _listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
     thread::sleep(Duration::from_millis(400));
+}
+
+#[test]
+fn helper_http_forever() {
+    if !helper_enabled() {
+        return;
+    }
+    let port: u16 = std::env::var("PORT").unwrap().parse().unwrap();
+    let _listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+    loop {
+        thread::sleep(Duration::from_secs(60));
+    }
 }
 
 #[test]
