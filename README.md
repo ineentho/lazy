@@ -115,6 +115,11 @@ A service named `vite` is then available at:
 https://vite-127-0-0-1.xip.example.com
 ```
 
+Xip hostnames may include a variable prefix before the registered service
+name. For example, `acme-vite-127-0-0-1.xip.example.com` also routes to the
+`vite` service. The original `Host` header is preserved so the service can use
+the prefix for tenant, environment, or branch routing.
+
 The DNS zone must resolve the encoded address, and the certificate must cover
 `*.xip.example.com`. Certificate creation and renewal are handled outside
 `lazy`. See the [example stack](examples/README.md) for a multi-service setup.

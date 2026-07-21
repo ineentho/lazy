@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Support variable prefixes before registered service names in xip hostnames.
+
 ## [0.1.8](https://github.com/ineentho/lazy/compare/v0.1.7...v0.1.8) - 2026-07-21
 
 ### Added

@@ -789,9 +789,24 @@ impl Registry {
             return None;
         }
 
-        self.host_routing
-            .service_name_from_host(host)
-            .map(|name| ProxyRoute { name })
+        let mut name = self.host_routing.service_name_from_host(host)?;
+        if matches!(self.host_routing, HostRouting::Xip(_)) {
+            let services = self.services.lock().await;
+            if let Some(registered_name) = services
+                .keys()
+                .filter(|registered_name| {
+                    name == registered_name.as_str()
+                        || name
+                            .strip_suffix(registered_name.as_str())
+                            .is_some_and(|prefix| prefix.ends_with('-'))
+                })
+                .max_by_key(|registered_name| registered_name.len())
+            {
+                name = registered_name.clone();
+            }
+        }
+
+        Some(ProxyRoute { name })
     }
 
     async fn has_service(&self, name: &str) -> bool {
@@ -1395,6 +1410,80 @@ mod tests {
             routing.service_name_from_host("vite-192-0-2-11.xip.example.com"),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn xip_routing_matches_a_registered_service_after_a_prefix() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(192, 0, 2, 10)).unwrap();
+        let registry = registry(routing, 8080, false);
+        register_http(&registry, "api", PortRequest::Fixed { port: 4000 }).await;
+
+        let route = registry
+            .route_for_request("acme-api-192-0-2-10.xip.example.com", &mut Vec::new())
+            .await
+            .unwrap();
+
+        assert_eq!(route.name, "api");
+    }
+
+    #[tokio::test]
+    async fn xip_routing_prefers_the_longest_registered_suffix() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(192, 0, 2, 10)).unwrap();
+        let registry = registry(routing, 8080, false);
+        register_http(&registry, "api", PortRequest::Fixed { port: 4000 }).await;
+        register_http(&registry, "internal-api", PortRequest::Fixed { port: 4001 }).await;
+
+        let route = registry
+            .route_for_request(
+                "acme-internal-api-192-0-2-10.xip.example.com",
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(route.name, "internal-api");
+    }
+
+    #[tokio::test]
+    async fn xip_routing_prefers_an_exact_registered_name() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(192, 0, 2, 10)).unwrap();
+        let registry = registry(routing, 8080, false);
+        register_http(&registry, "api", PortRequest::Fixed { port: 4000 }).await;
+        register_http(&registry, "acme-api", PortRequest::Fixed { port: 4001 }).await;
+
+        let route = registry
+            .route_for_request("acme-api-192-0-2-10.xip.example.com", &mut Vec::new())
+            .await
+            .unwrap();
+
+        assert_eq!(route.name, "acme-api");
+    }
+
+    #[tokio::test]
+    async fn xip_routing_requires_a_hyphen_before_the_registered_service() {
+        let routing = HostRouting::xip("xip.example.com", Ipv4Addr::new(192, 0, 2, 10)).unwrap();
+        let registry = registry(routing, 8080, false);
+        register_http(&registry, "api", PortRequest::Fixed { port: 4000 }).await;
+
+        let route = registry
+            .route_for_request("myapi-192-0-2-10.xip.example.com", &mut Vec::new())
+            .await
+            .unwrap();
+
+        assert_eq!(route.name, "myapi");
+    }
+
+    #[tokio::test]
+    async fn wildcard_prefix_matching_is_limited_to_xip_routing() {
+        let registry = registry(HostRouting::Suffix(".localhost".to_string()), 8080, false);
+        register_http(&registry, "api", PortRequest::Fixed { port: 4000 }).await;
+
+        let route = registry
+            .route_for_request("acme-api.localhost", &mut Vec::new())
+            .await
+            .unwrap();
+
+        assert_eq!(route.name, "acme-api");
     }
 
     #[test]
