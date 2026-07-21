@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/ineentho/lazy/compare/v0.1.9...v0.1.10) - 2026-07-21
+
+### Fixed
+
+- *(routing)* accept any valid IPv4 address in xip hosts ([#32](https://github.com/ineentho/lazy/pull/32))
+
 ### Fixed
 
 - Accept any valid embedded IPv4 address in xip request hostnames while using
