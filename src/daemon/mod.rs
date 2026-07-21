@@ -4,13 +4,14 @@ use serde::Serialize;
 use std::{collections::HashMap, future::Future, net::Ipv4Addr, path::PathBuf, sync::Arc};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
-    net::{TcpListener, TcpStream, UnixListener, UnixStream},
+    net::{TcpListener, UnixListener, UnixStream},
     sync::{Mutex, mpsc, oneshot},
     time::{Duration, timeout},
 };
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 
 use crate::{
+    command::ports,
     ipc::{
         self, ClientRequest, DaemonMessage, PortRequest, ProcessKind, Register, RunnerMessage,
         SocketMessage,
@@ -481,7 +482,7 @@ where
     let mut upstream = run_with_timeout(
         UPSTREAM_CONNECT_TIMEOUT,
         "upstream connection",
-        TcpStream::connect(("127.0.0.1", port)),
+        ports::connect_loopback(port),
     )
     .await??;
     upstream.write_all(&buffer).await?;
