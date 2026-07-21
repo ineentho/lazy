@@ -1,7 +1,7 @@
 use std::{
     fs::OpenOptions,
-    io::Write,
-    net::{Ipv4Addr, TcpListener},
+    io::{Read, Write},
+    net::{Ipv4Addr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -389,6 +389,168 @@ fn process_exists(pid: &str) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+fn spawn_proxy_on(home: &Path, extra_args: &[&str]) -> (ChildGuard, u16) {
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let mut args = vec!["proxy", "--listen", &listen];
+    args.extend_from_slice(extra_args);
+    let child = lazy(home)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let socket = home.join(".lazy/lazy.sock");
+    wait_until(Duration::from_secs(5), || socket.exists());
+    (ChildGuard(child), port)
+}
+
+fn http_get(host: &str, port: u16, path: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("could not connect to proxy");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    stream.flush().unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+fn parse_http_response(raw: &str) -> (u16, String) {
+    let mut lines = raw.lines();
+    let status_line = lines.next().unwrap_or("");
+    let code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("0")
+        .parse()
+        .unwrap_or(0);
+    let body_start = raw.find("\r\n\r\n").map(|p| p + 4).unwrap_or(raw.len());
+    (code, raw[body_start..].to_string())
+}
+
+#[test]
+fn suffix_status_root_serves_html_shell() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("suffix-html");
+    let (_proxy, port) = spawn_proxy_on(&home.0, &[]);
+    let raw = http_get("localhost", port, "/");
+    let (code, body) = parse_http_response(&raw);
+    assert_eq!(code, 200, "expected 200, got response: {raw}");
+    assert!(body.contains("loading"));
+    assert!(body.contains("fetch"));
+    assert!(body.contains("/api/status"));
+}
+
+#[test]
+fn suffix_status_api_returns_json() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("suffix-json");
+    let (_proxy, port) = spawn_proxy_on(&home.0, &[]);
+    let raw = http_get("localhost", port, "/api/status");
+    let (code, body) = parse_http_response(&raw);
+    assert_eq!(code, 200, "expected 200, got response: {raw}");
+    assert!(body.starts_with('['), "expected JSON array, got: {raw}");
+}
+
+#[test]
+fn suffix_status_unrelated_path_returns_not_found() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("suffix-404");
+    let (_proxy, port) = spawn_proxy_on(&home.0, &[]);
+    let raw = http_get("localhost", port, "/some-other-path");
+    let (code, _) = parse_http_response(&raw);
+    assert_ne!(code, 200, "unrelated path should not return 200: {raw}");
+}
+
+#[test]
+fn suffix_service_host_routes_to_service_not_status() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("suffix-service");
+    let (_proxy, port) = spawn_proxy_on(&home.0, &[]);
+    // Service hosts like demo.localhost must NOT be interpreted as status
+    let raw = http_get("demo.localhost", port, "/");
+    let (code, _) = parse_http_response(&raw);
+    assert_ne!(code, 200, "service host should not get status page: {raw}");
+    // Service hosts get routed to the proxy which eventually fails (no such service)
+}
+
+#[test]
+fn xip_status_root_serves_html_shell() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("xip-html");
+    let (_proxy, port) = spawn_proxy_on(
+        &home.0,
+        &["--xip-domain", "xip.example.com", "--xip-ip", "127.0.0.1"],
+    );
+    let raw = http_get("127-0-0-1.xip.example.com", port, "/");
+    let (code, body) = parse_http_response(&raw);
+    assert_eq!(code, 200, "expected 200, got response: {raw}");
+    assert!(body.contains("loading"));
+    assert!(body.contains("fetch"));
+    assert!(body.contains("/api/status"));
+}
+
+#[test]
+fn xip_status_api_returns_json() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("xip-json");
+    let (_proxy, port) = spawn_proxy_on(
+        &home.0,
+        &["--xip-domain", "xip.example.com", "--xip-ip", "127.0.0.1"],
+    );
+    let raw = http_get("127-0-0-1.xip.example.com", port, "/api/status");
+    let (code, body) = parse_http_response(&raw);
+    assert_eq!(code, 200, "expected 200, got response: {raw}");
+    assert!(body.starts_with('['), "expected JSON array, got: {raw}");
+}
+
+#[test]
+fn xip_status_unrelated_path_returns_not_found() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("xip-404");
+    let (_proxy, port) = spawn_proxy_on(
+        &home.0,
+        &["--xip-domain", "xip.example.com", "--xip-ip", "127.0.0.1"],
+    );
+    let raw = http_get("127-0-0-1.xip.example.com", port, "/some-other-path");
+    let (code, _) = parse_http_response(&raw);
+    assert_ne!(code, 200, "unrelated path should not return 200: {raw}");
+}
+
+#[test]
+fn xip_service_host_routes_to_service_not_status() {
+    if helper_enabled() {
+        return;
+    }
+    let home = TestHome::new("xip-service");
+    let (_proxy, port) = spawn_proxy_on(
+        &home.0,
+        &["--xip-domain", "xip.example.com", "--xip-ip", "127.0.0.1"],
+    );
+    // Service hostnames include the encoded IP as a suffix, so they don't match the bare host
+    let raw = http_get("demo-127-0-0-1.xip.example.com", port, "/");
+    let (code, _) = parse_http_response(&raw);
+    assert_ne!(code, 200, "service host should not get status page: {raw}");
 }
 
 #[test]
